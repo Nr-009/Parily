@@ -73,3 +73,12 @@ func (r *DocumentRepository) SaveDocument(ctx context.Context, fileID string, st
 	}
 	return nil
 }
+
+// DeleteDocumentsByRoom deletes all Yjs documents for a room from MongoDB.
+func (r *DocumentRepository) DeleteDocumentsByRoom(ctx context.Context, roomID string) error {
+	_, err := r.col.DeleteMany(ctx, bson.M{"room_id": roomID})
+	if err != nil {
+		return fmt.Errorf("delete documents by room: %w", err)
+	}
+	return nil
+}

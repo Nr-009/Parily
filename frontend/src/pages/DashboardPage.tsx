@@ -1,13 +1,13 @@
-import { useState, useEffect, type FormEvent } from "react"
+import { useState, useEffect } from "react"
 import { useNavigate } from "react-router-dom"
 import { useAuth, apiFetch } from "../context/AuthContext"
 import "./dashboard.css"
 
 interface Room {
-  id: string
-  name: string
-  owner_id: string
-  role: "owner" | "editor" | "viewer"
+  id:         string
+  name:       string
+  owner_id:   string
+  role:       "owner" | "editor" | "viewer"
   created_at: string
 }
 
@@ -18,15 +18,13 @@ function ShareModal({ room, onClose }: { room: Room; onClose: () => void }) {
   const [success, setSuccess] = useState("")
   const [loading, setLoading] = useState(false)
 
-  const handleInvite = async (e: FormEvent) => {
-    e.preventDefault()
-    setError("")
-    setSuccess("")
-    setLoading(true)
+const handleInvite = async (e: React.FormEvent<HTMLFormElement>) => {
+  e.preventDefault()
+    setError(""); setSuccess(""); setLoading(true)
     try {
       await apiFetch(`/api/rooms/${room.id}/members`, {
         method: "POST",
-        body: JSON.stringify({ email, role }),
+        body:   JSON.stringify({ email, role }),
       })
       setSuccess(`${email} added as ${role}`)
       setEmail("")
@@ -44,7 +42,6 @@ function ShareModal({ room, onClose }: { room: Room; onClose: () => void }) {
           <h3>Share "{room.name}"</h3>
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
-
         <form onSubmit={handleInvite} className="share-form">
           <input
             type="email"
@@ -62,10 +59,8 @@ function ShareModal({ room, onClose }: { room: Room; onClose: () => void }) {
             {loading ? "..." : "Invite"}
           </button>
         </form>
-
         {error   && <p className="share-error">{error}</p>}
         {success && <p className="share-success">{success}</p>}
-
         <div className="share-legend">
           <span><strong>Editor</strong> — can read and write</span>
           <span><strong>Viewer</strong> — read only</span>
@@ -77,14 +72,14 @@ function ShareModal({ room, onClose }: { room: Room; onClose: () => void }) {
 
 export default function DashboardPage() {
   const { user, logout } = useAuth()
-  const navigate = useNavigate()
+  const navigate         = useNavigate()
 
-  const [rooms, setRooms]         = useState<Room[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [creating, setCreating]   = useState(false)
-  const [newName, setNewName]     = useState("")
+  const [rooms, setRooms]           = useState<Room[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [creating, setCreating]     = useState(false)
+  const [newName, setNewName]       = useState("")
   const [showCreate, setShowCreate] = useState(false)
-  const [shareRoom, setShareRoom] = useState<Room | null>(null)
+  const [shareRoom, setShareRoom]   = useState<Room | null>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -106,7 +101,7 @@ export default function DashboardPage() {
     try {
       const data = await apiFetch("/api/rooms", {
         method: "POST",
-        body: JSON.stringify({ name: newName.trim() }),
+        body:   JSON.stringify({ name: newName.trim() }),
       })
       setRooms((prev) => [data.room, ...prev])
       setNewName("")
@@ -116,6 +111,17 @@ export default function DashboardPage() {
       console.error(err)
     } finally {
       setCreating(false)
+    }
+  }
+
+  const handleDelete = async (room: Room, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!confirm(`Delete "${room.name}"? This cannot be undone.`)) return
+    try {
+      await apiFetch(`/api/rooms/${room.id}`, { method: "DELETE" })
+      setRooms((prev) => prev.filter((r) => r.id !== room.id))
+    } catch (err: any) {
+      console.error("could not delete room:", err)
     }
   }
 
@@ -206,13 +212,23 @@ export default function DashboardPage() {
                     {room.role}
                   </span>
                 </div>
+
                 {room.role === "owner" && (
-                  <button
-                    className="dash-card-share"
-                    onClick={(e) => { e.stopPropagation(); setShareRoom(room) }}
-                  >
-                    Share
-                  </button>
+                  <div className="dash-card-actions">
+                    <button
+                      className="dash-card-share"
+                      onClick={(e) => { e.stopPropagation(); setShareRoom(room) }}
+                    >
+                      Share
+                    </button>
+                    <button
+                      className="dash-card-delete"
+                      onClick={(e) => handleDelete(room, e)}
+                      title="Delete room"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 )}
               </div>
             ))}

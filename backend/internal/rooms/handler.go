@@ -1,6 +1,7 @@
 package rooms
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -13,15 +14,17 @@ import (
 
 	mongoRepo "parily.dev/app/internal/mongo"
 	pg "parily.dev/app/internal/postgres"
+	"parily.dev/app/internal/redis"
 )
 
 type Handler struct {
 	db      *pgxpool.Pool
 	mongoDB *mongo.Database
+	rdb     *redis.Client
 }
 
-func NewHandler(db *pgxpool.Pool, mongoDB *mongo.Database) *Handler {
-	return &Handler{db: db, mongoDB: mongoDB}
+func NewHandler(db *pgxpool.Pool, mongoDB *mongo.Database, rdb *redis.Client) *Handler {
+	return &Handler{db: db, mongoDB: mongoDB, rdb: rdb}
 }
 
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
@@ -30,9 +33,20 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/:roomID/role", h.GetRole)
 	rg.GET("/:roomID/files", h.GetFiles)
 	rg.PATCH("/:roomID/files/:fileID", h.UpdateFile)
-	rg.POST("/:roomID/members", h.AddMember)
 	rg.POST("/:roomID/files/:fileID/state", h.SaveState)
 	rg.GET("/:roomID/files/:fileID/state", h.LoadState)
+	rg.POST("/:roomID/members", h.AddMember)
+	rg.GET("/:roomID/members", h.ListMembers)
+	rg.DELETE("/:roomID/members/:userID", h.RemoveMember)
+	rg.PATCH("/:roomID/members/:userID", h.UpdateMemberRole)
+	rg.DELETE("/:roomID", h.DeleteRoom)
+}
+
+// publishPermission publishes a permission event to Redis.
+// Uses the existing Publish method — just a different channel string.
+func (h *Handler) publishPermission(roomID string, event map[string]string) {
+	data, _ := json.Marshal(event)
+	h.rdb.Publish("room:"+roomID+":permissions", data)
 }
 
 type createRoomRequest struct {
@@ -173,6 +187,62 @@ func (h *Handler) UpdateFile(c *gin.Context) {
 	})
 }
 
+func (h *Handler) SaveState(c *gin.Context) {
+	roomID := c.Param("roomID")
+	fileID := c.Param("fileID")
+	userID := c.GetString("userID")
+	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if role == "viewer" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "viewers cannot save"})
+		return
+	}
+	state, err := io.ReadAll(c.Request.Body)
+	if err != nil || len(state) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "empty state"})
+		return
+	}
+	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
+	if err := docRepo.SaveDocument(c.Request.Context(), fileID, state); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save state"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "saved"})
+}
+
+func (h *Handler) LoadState(c *gin.Context) {
+	roomID := c.Param("roomID")
+	fileID := c.Param("fileID")
+	userID := c.GetString("userID")
+	_, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
+	doc, err := docRepo.LoadDocument(c.Request.Context(), fileID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load state"})
+		return
+	}
+	if doc == nil || len(doc.YjsState) == 0 {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	c.Data(http.StatusOK, "application/octet-stream", doc.YjsState)
+}
+
 type addMemberRequest struct {
 	Email string `json:"email" binding:"required,email"`
 	Role  string `json:"role"  binding:"required,oneof=editor viewer"`
@@ -188,7 +258,7 @@ func (h *Handler) AddMember(c *gin.Context) {
 	}
 	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, callerID)
 	if err == pgx.ErrNoRows {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
 		return
 	}
 	if err != nil {
@@ -214,80 +284,147 @@ func (h *Handler) AddMember(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"message": "member added",
-		"user": gin.H{
-			"id":    target.ID,
-			"email": target.Email,
-			"name":  target.Name,
-		},
-		"role": req.Role,
+		"user":    gin.H{"id": target.ID, "email": target.Email, "name": target.Name},
+		"role":    req.Role,
 	})
 }
 
-// SaveState handles POST /api/rooms/:roomID/files/:fileID/state
-// Body: raw binary Yjs encoded state (application/octet-stream)
-// Only editors and owners can save.
-func (h *Handler) SaveState(c *gin.Context) {
+func (h *Handler) ListMembers(c *gin.Context) {
 	roomID := c.Param("roomID")
-	fileID := c.Param("fileID")
 	userID := c.GetString("userID")
-
-	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
-	if err == pgx.ErrNoRows {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
-		return
-	}
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		return
-	}
-	if role == "viewer" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "viewers cannot save"})
-		return
-	}
-
-	state, err := io.ReadAll(c.Request.Body)
-	if err != nil || len(state) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "empty state"})
-		return
-	}
-
-	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
-	if err := docRepo.SaveDocument(c.Request.Context(), fileID, state); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save state"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "saved"})
-}
-
-// LoadState handles GET /api/rooms/:roomID/files/:fileID/state
-// Returns raw Yjs binary state so the frontend can apply it before connecting WebSocket.
-func (h *Handler) LoadState(c *gin.Context) {
-	roomID := c.Param("roomID")
-	fileID := c.Param("fileID")
-	userID := c.GetString("userID")
-
 	_, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
 	if err == pgx.ErrNoRows {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
 		return
 	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
-
-	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
-	doc, err := docRepo.LoadDocument(c.Request.Context(), fileID)
+	members, err := pg.ListMembers(c.Request.Context(), h.db, roomID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load state"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list members"})
+		return
+	}
+	result := make([]gin.H, 0, len(members))
+	for _, m := range members {
+		result = append(result, gin.H{
+			"user_id": m.UserID,
+			"email":   m.Email,
+			"name":    m.Name,
+			"role":    m.Role,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"members": result})
+}
+
+func (h *Handler) RemoveMember(c *gin.Context) {
+	roomID := c.Param("roomID")
+	targetID := c.Param("userID")
+	callerID := c.GetString("userID")
+	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, callerID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if role != "owner" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only owner can remove members"})
+		return
+	}
+	if targetID == callerID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot remove yourself"})
+		return
+	}
+	if err := pg.RemoveMember(c.Request.Context(), h.db, roomID, targetID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not remove member"})
+		return
+	}
+	h.publishPermission(roomID, map[string]string{
+		"type":    "removed",
+		"user_id": targetID,
+	})
+	c.JSON(http.StatusOK, gin.H{"message": "member removed"})
+}
+
+type updateRoleRequest struct {
+	Role string `json:"role" binding:"required,oneof=editor viewer"`
+}
+
+func (h *Handler) UpdateMemberRole(c *gin.Context) {
+	roomID := c.Param("roomID")
+	targetID := c.Param("userID")
+	callerID := c.GetString("userID")
+	var req updateRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, callerID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if role != "owner" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only owner can change roles"})
+		return
+	}
+	if err := pg.UpdateMemberRole(c.Request.Context(), h.db, roomID, targetID, req.Role); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not update role"})
+		return
+	}
+	h.publishPermission(roomID, map[string]string{
+		"type":    "role_changed",
+		"user_id": targetID,
+		"role":    req.Role,
+	})
+	c.JSON(http.StatusOK, gin.H{"message": "role updated", "role": req.Role})
+}
+
+// Also add to RegisterRoutes: rg.DELETE("/:roomID", h.DeleteRoom)
+
+func (h *Handler) DeleteRoom(c *gin.Context) {
+	roomID := c.Param("roomID")
+	callerID := c.GetString("userID")
+
+	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, callerID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if role != "owner" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only owner can delete the room"})
 		return
 	}
 
-	if doc == nil || len(doc.YjsState) == 0 {
-		c.Status(http.StatusNoContent)
+	// Delete MongoDB documents first (no CASCADE there)
+	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
+	if err := docRepo.DeleteDocumentsByRoom(c.Request.Context(), roomID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete documents"})
 		return
 	}
 
-	c.Data(http.StatusOK, "application/octet-stream", doc.YjsState)
+	// Single DELETE — CASCADE handles files and room_members automatically
+	if err := pg.DeleteRoom(c.Request.Context(), h.db, roomID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete room"})
+		return
+	}
+
+	// Notify anyone currently in the room
+	h.publishPermission(roomID, map[string]string{
+		"type": "room_deleted",
+	})
+
+	c.JSON(http.StatusOK, gin.H{"message": "room deleted"})
 }

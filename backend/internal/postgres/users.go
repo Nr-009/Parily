@@ -49,11 +49,31 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 func GetUserByID(ctx context.Context, db *pgxpool.Pool, id string) (*User, error) {
 	u := &User{}
 	err := db.QueryRow(ctx, `
-        SELECT id, email, name, password_hash, created_at
+        SELECT id, email, name, created_at
         FROM users WHERE id = $1
-    `, id).Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.CreatedAt)
+    `, id).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt)
 	if err != nil {
 		return nil, err
+	}
+	return u, nil
+}
+
+// UpsertGoogleUser handles three cases:
+//  1. New user (no email match)      → INSERT with google_id, no password
+//  2. Existing Google user           → UPDATE name in case it changed
+//  3. Existing email/password user   → link their Google account
+func UpsertGoogleUser(ctx context.Context, db *pgxpool.Pool, googleID, email, name string) (*User, error) {
+	u := &User{}
+	err := db.QueryRow(ctx, `
+		INSERT INTO users (email, name, google_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (email) DO UPDATE
+			SET google_id = EXCLUDED.google_id,
+			    name      = EXCLUDED.name
+		RETURNING id, email, name, created_at
+	`, email, name, googleID).Scan(&u.ID, &u.Email, &u.Name, &u.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("upsert google user: %w", err)
 	}
 	return u, nil
 }

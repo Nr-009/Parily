@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"net/http"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -16,8 +15,8 @@ import (
 	"parily.dev/app/internal/config"
 	"parily.dev/app/internal/health"
 	"parily.dev/app/internal/logger"
+	"parily.dev/app/internal/middleware"
 	mongoClient "parily.dev/app/internal/mongo"
-	mongoRepo "parily.dev/app/internal/mongo"
 	"parily.dev/app/internal/postgres"
 	"parily.dev/app/internal/redis"
 	"parily.dev/app/internal/rooms"
@@ -81,58 +80,47 @@ func main() {
 		logger.Log.Info("Migrations applied successfully")
 	}
 
+	// ── Hubs ──────────────────────────────────────────────────────────────────
+	hub := wshandler.NewHub(redisClient, logger.Log)
+	permissionsHub := wshandler.NewPermissionsHub(redisClient, logger.Log)
+
 	// ── Handlers ──────────────────────────────────────────────────────────────
-	docRepo := mongoRepo.NewDocumentRepository(mongoDB)
-	hub := wshandler.NewHub(redisClient, docRepo, logger.Log)
 	wsHandler := wshandler.NewHandler(hub, pgPool, cfg, logger.Log)
-	authHandler := auth.NewHandler(pgPool, cfg)
-	roomsHandler := rooms.NewHandler(pgPool, mongoDB)
+	permissionsHandler := wshandler.NewPermissionsHandler(permissionsHub, pgPool, cfg, logger.Log)
+	authHandler := auth.NewHandler(pgPool, cfg, logger.Log)
+	roomsHandler := rooms.NewHandler(pgPool, mongoDB, redisClient)
 
 	// ── Router ────────────────────────────────────────────────────────────────
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
 		AllowHeaders:     []string{"Content-Type"},
 		AllowCredentials: true,
 	}))
 
-	requireAuth := func(c *gin.Context) {
-		claims, err := auth.ParseToken(c, cfg.JWTSecret)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			return
-		}
-		c.Set("userID", claims.UserID)
-		c.Set("email", claims.Email)
-	}
-
+	// Health
 	r.GET("/health/live", health.Live)
 	r.GET("/health/ready", health.Ready(pgPool, mongoDB, redisClient))
 
+	// Auth public
 	authHandler.RegisterRoutes(r.Group("/auth"))
 
-	r.GET("/auth/me", func(c *gin.Context) {
-		requireAuth(c)
-		if c.IsAborted() {
-			return
-		}
-		authHandler.Me(c)
-	})
+	// Auth protected
+	authProtected := r.Group("/auth")
+	authProtected.Use(middleware.RequireAuth(cfg.JWTSecret))
+	authProtected.GET("/me", authHandler.Me)
 
+	// API protected
 	api := r.Group("/api")
-	api.Use(func(c *gin.Context) {
-		requireAuth(c)
-		if c.IsAborted() {
-			return
-		}
-		c.Next()
-	})
+	api.Use(middleware.RequireAuth(cfg.JWTSecret))
 	roomsHandler.RegisterRoutes(api.Group("/rooms"))
 
-	// WebSocket — now includes fileId in the path
+	// WebSocket — Yjs sync
 	r.GET("/ws/:roomId/:fileId", wsHandler.ServeWS)
+	// WebSocket — permissions
+	r.GET("/ws/:roomId/permissions", permissionsHandler.ServePermissions)
 	logger.Log.Info("Server listening", zap.String("port", cfg.ServerPort))
 	if err := r.Run(":" + cfg.ServerPort); err != nil {
 		logger.Log.Fatal("Server failed", zap.Error(err))

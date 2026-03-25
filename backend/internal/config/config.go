@@ -28,6 +28,10 @@ type Config struct {
 
 	ExecutorPort string
 	ExecutorURL  string
+
+	GoogleClientID     string
+    GoogleClientSecret string
+    GoogleRedirectURL  string
 }
 
 func Load() (*Config, error) {
@@ -61,6 +65,10 @@ func Load() (*Config, error) {
 
 		ExecutorPort: viper.GetString("EXECUTOR_PORT"),
 		ExecutorURL:  viper.GetString("EXECUTOR_URL"),
+
+		GoogleClientID:     viper.GetString("GOOGLE_CLIENT_ID"),
+    	GoogleClientSecret: viper.GetString("GOOGLE_CLIENT_SECRET"),
+    	GoogleRedirectURL:  viper.GetString("GOOGLE_REDIRECT_URL"),
 	}
 
 	if cfg.ServerPort == "" {

@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 	"parily.dev/app/internal/config"
 	pg "parily.dev/app/internal/postgres"
 )
@@ -15,16 +16,19 @@ import (
 type Handler struct {
 	db  *pgxpool.Pool
 	cfg *config.Config
+	log *zap.Logger
 }
 
-func NewHandler(db *pgxpool.Pool, cfg *config.Config) *Handler {
-	return &Handler{db: db, cfg: cfg}
+func NewHandler(db *pgxpool.Pool, cfg *config.Config, log *zap.Logger) *Handler {
+	return &Handler{db: db, cfg: cfg, log: log}
 }
 
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.POST("/register", h.Register)
 	rg.POST("/login", h.Login)
 	rg.POST("/logout", h.Logout)
+	rg.GET("/google", h.GoogleLogin)
+	rg.GET("/callback", h.GoogleCallback)
 }
 
 // ── Register ──────────────────────────────────────────────────────────────────
@@ -144,6 +148,7 @@ func (h *Handler) Logout(c *gin.Context) {
 
 func (h *Handler) Me(c *gin.Context) {
 	userID := c.GetString("userID")
+
 	user, err := pg.GetUserByID(c.Request.Context(), h.db, userID)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
@@ -156,4 +161,95 @@ func (h *Handler) Me(c *gin.Context) {
 			"name":  user.Name,
 		},
 	})
+}
+
+const stateCookieName = "oauth_state"
+
+// GoogleLogin handles GET /auth/google
+// Generates a random state string, stores it in a cookie,
+// then redirects the browser to Google's consent screen.
+func (h *Handler) GoogleLogin(c *gin.Context) {
+	cfg := newOAuthConfig(
+		h.cfg.GoogleClientID,
+		h.cfg.GoogleClientSecret,
+		h.cfg.GoogleRedirectURL,
+	)
+
+	state, err := generateState()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not generate state"})
+		return
+	}
+
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     stateCookieName,
+		Value:    state,
+		Path:     "/",
+		MaxAge:   300, // 5 minutes — enough time to complete OAuth flow
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	// Redirect browser to Google consent screen
+	c.Redirect(http.StatusTemporaryRedirect, buildAuthURL(cfg, state))
+}
+
+// GoogleCallback handles GET /auth/callback
+// Google redirects here after user approves.
+// Verifies state, exchanges code for user info, upserts user, issues JWT.
+func (h *Handler) GoogleCallback(c *gin.Context) {
+	// 1. Verify state matches what we sent — CSRF protection
+	stateCookie, err := c.Cookie(stateCookieName)
+	if err != nil || stateCookie != c.Query("state") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid state"})
+		return
+	}
+
+	// Clear the state cookie
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:   stateCookieName,
+		Value:  "",
+		Path:   "/",
+		MaxAge: -1,
+	})
+
+	// 2. Exchange code for Google user info (server-to-server)
+	code := c.Query("code")
+	if code == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing code"})
+		return
+	}
+
+	cfg := newOAuthConfig(
+		h.cfg.GoogleClientID,
+		h.cfg.GoogleClientSecret,
+		h.cfg.GoogleRedirectURL,
+	)
+
+	googleUser, err := exchangeCode(c.Request.Context(), cfg, code)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not exchange code"})
+		return
+	}
+
+	// 3. Upsert user in PostgreSQL
+	user, err := pg.UpsertGoogleUser(
+		c.Request.Context(),
+		h.db,
+		googleUser.ID,
+		googleUser.Email,
+		googleUser.Name,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create user"})
+		return
+	}
+
+	// 4. Issue JWT cookie — same as email/password login
+	if err := IssueToken(c, user.ID, user.Email, h.cfg.JWTSecret, h.cfg.JWTExpiryHours); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not issue token"})
+		return
+	}
+	// 5. Redirect to frontend dashboard
+	c.Redirect(http.StatusTemporaryRedirect, "http://localhost:5173/dashboard")
 }

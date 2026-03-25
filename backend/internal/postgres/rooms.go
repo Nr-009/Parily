@@ -147,3 +147,12 @@ func AddMember(ctx context.Context, db *pgxpool.Pool, roomID, userID, role strin
 	}
 	return nil
 }
+
+// DeleteRoom deletes a room — CASCADE handles files and room_members automatically.
+func DeleteRoom(ctx context.Context, db *pgxpool.Pool, roomID string) error {
+	_, err := db.Exec(ctx, `DELETE FROM rooms WHERE id = $1`, roomID)
+	if err != nil {
+		return fmt.Errorf("delete room: %w", err)
+	}
+	return nil
+}

@@ -65,8 +65,6 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		zap.String("role", role),
 	)
 
-	// Pure sync loop — no state loading here
-	// Frontend loads persisted state via GET /api/rooms/:roomID/files/:fileID/state
 	for {
 		msgType, data, err := conn.ReadMessage()
 		if err != nil {

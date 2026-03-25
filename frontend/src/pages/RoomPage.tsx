@@ -1,6 +1,8 @@
 import { useState, useEffect } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { useAuth, apiFetch } from "../context/AuthContext"
+import { usePermissions } from "../hooks/usePermissions"
+import { Sidebar } from "../components/Sidebar/sidebar"
 import { Editor } from "../components/Editor/Editor"
 import "./room.css"
 
@@ -10,33 +12,37 @@ interface File {
   language: string
 }
 
-export default function RoomPage() {
-  const { roomId } = useParams<{ roomId: string }>()
-  const { user }   = useAuth()
-  const navigate   = useNavigate()
+interface Member {
+  user_id: string
+  name:    string
+  role:    string
+}
 
-  const [role, setRole]         = useState<string | null>(null)
-  const [files, setFiles]       = useState<File[]>([])
+export default function RoomPage() {
+  const { roomId }   = useParams<{ roomId: string }>()
+  const { user }     = useAuth()
+  const navigate     = useNavigate()
+
+  const [role, setRole]           = useState<string | null>(null)
+  const [files, setFiles]         = useState<File[]>([])
+  const [members, setMembers]     = useState<Member[]>([])
   const [activeFile, setActiveFile] = useState<File | null>(null)
-  const [loading, setLoading]   = useState(true)
-  const [error, setError]       = useState("")
+  const [loading, setLoading]     = useState(true)
+  const [error, setError]         = useState("")
 
   useEffect(() => {
     const load = async () => {
       try {
-        // Check role and load files in parallel
-        const [roleData, filesData] = await Promise.all([
+        const [roleData, filesData, membersData] = await Promise.all([
           apiFetch(`/api/rooms/${roomId}/role`),
           apiFetch(`/api/rooms/${roomId}/files`),
+          apiFetch(`/api/rooms/${roomId}/members`),
         ])
-
         setRole(roleData.role)
-        const fileList = filesData.files ?? []
-        setFiles(fileList)
-
-        // Load first file by default
-        if (fileList.length > 0) {
-          setActiveFile(fileList[0])
+        setFiles(filesData.files ?? [])
+        setMembers(membersData.members ?? [])
+        if (filesData.files?.length > 0) {
+          setActiveFile(filesData.files[0])
         }
       } catch {
         setError("You do not have access to this room.")
@@ -47,6 +53,13 @@ export default function RoomPage() {
     load()
   }, [roomId])
 
+  // Listen for permission changes via dedicated WebSocket
+  usePermissions({
+    roomId:        roomId!,
+    currentUserId: user?.id ?? "",
+    onRoleChanged: (newRole) => setRole(newRole),
+  })
+
   if (loading) {
     return (
       <div className="room-loading">
@@ -55,10 +68,10 @@ export default function RoomPage() {
     )
   }
 
-  if (error) {
+  if (error || !role) {
     return (
       <div className="room-error">
-        <p>{error}</p>
+        <p>{error || "Access denied"}</p>
         <button onClick={() => navigate("/dashboard")}>Back to dashboard</button>
       </div>
     )
@@ -78,25 +91,16 @@ export default function RoomPage() {
       </header>
 
       <div className="room-body">
-        {/* File sidebar */}
-        <aside className="room-sidebar">
-          <div className="room-sidebar-title">Files</div>
-          {files.map((file) => (
-            <button
-              key={file.id}
-              className={`room-file-item ${activeFile?.id === file.id ? "active" : ""}`}
-              onClick={() => setActiveFile(file)}
-            >
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-                <path d="M3 2h7l3 3v9H3V2z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
-                <path d="M10 2v3h3" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
-              </svg>
-              {file.name}
-            </button>
-          ))}
-        </aside>
+        <Sidebar
+          roomId={roomId!}
+          files={files}
+          activeFile={activeFile}
+          members={members}
+          currentRole={role}
+          onFileClick={setActiveFile}
+          onMembersChange={setMembers}
+        />
 
-        {/* Editor area */}
         <div className="room-editor">
           {role === "viewer" && (
             <div className="room-viewer-banner">

@@ -1,14 +1,10 @@
 import { useState } from "react"
 import { apiFetch } from "../../context/AuthContext"
 import type { OnlineUser } from "../../hooks/useRoomSocket"
+import type { File } from "../../pages/RoomPage"
 import { MembersList } from "./memberlist"
+import { FileTree } from "../FileTree/FileTree"
 import "./sidebar.css"
-
-interface File {
-  id:       string
-  name:     string
-  language: string
-}
 
 interface Member {
   user_id: string
@@ -25,6 +21,7 @@ interface Props {
   onlineUsers:     Map<string, OnlineUser>
   onFileClick:     (file: File) => void
   onMembersChange: (members: Member[]) => void
+  onFilesChange:   (files: File[]) => void
 }
 
 export function Sidebar({
@@ -36,6 +33,7 @@ export function Sidebar({
   onlineUsers,
   onFileClick,
   onMembersChange,
+  onFilesChange,
 }: Props) {
   const isOwner = currentRole === "owner"
 
@@ -69,23 +67,14 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-
-      <div className="sidebar-section">
-        <div className="sidebar-label">Files</div>
-        {files.map((file) => (
-          <button
-            key={file.id}
-            className={`sidebar-file ${activeFile?.id === file.id ? "active" : ""}`}
-            onClick={() => onFileClick(file)}
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
-              <path d="M3 2h7l3 3v9H3V2z" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
-              <path d="M10 2v3h3" stroke="currentColor" strokeWidth="1" strokeLinejoin="round"/>
-            </svg>
-            {file.name}
-          </button>
-        ))}
-      </div>
+      <FileTree
+        roomId={roomId}
+        files={files}
+        activeFile={activeFile}
+        currentRole={currentRole}
+        onFileClick={onFileClick}
+        onFilesChange={onFilesChange}
+      />
 
       <div className="sidebar-divider" />
 
@@ -98,7 +87,6 @@ export function Sidebar({
           onlineUsers={onlineUsers}
           onMembersChange={onMembersChange}
         />
-
         {isOwner && (
           <form className="sidebar-invite" onSubmit={handleInvite}>
             <div className="sidebar-label" style={{ marginTop: "0.75rem" }}>Invite</div>
@@ -130,7 +118,6 @@ export function Sidebar({
           </form>
         )}
       </div>
-
     </aside>
   )
 }

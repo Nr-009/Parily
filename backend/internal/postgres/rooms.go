@@ -20,17 +20,6 @@ type RoomWithRole struct {
 	Role string
 }
 
-type File struct {
-	ID        string
-	RoomID    string
-	Name      string
-	Language  string
-	IsActive  bool
-	CreatedBy string
-	CreatedAt time.Time
-	UpdatedAt *time.Time
-}
-
 func CreateRoom(ctx context.Context, db *pgxpool.Pool, name, ownerID string) (*Room, string, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -58,8 +47,8 @@ func CreateRoom(ctx context.Context, db *pgxpool.Pool, name, ownerID string) (*R
 
 	var fileID string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO files (room_id, name, language, created_by)
-		VALUES ($1, 'main.py', 'python', $2)
+		INSERT INTO files (room_id, name, language, parent_id, is_folder, created_by)
+		VALUES ($1, 'main.py', 'python', NULL, FALSE, $2)
 		RETURNING id
 	`, r.ID, ownerID).Scan(&fileID)
 	if err != nil {
@@ -108,34 +97,6 @@ func GetMemberRole(ctx context.Context, db *pgxpool.Pool, roomID, userID string)
 	return role, nil
 }
 
-func GetFilesForRoom(ctx context.Context, db *pgxpool.Pool, roomID string) ([]File, error) {
-	rows, err := db.Query(ctx, `
-		SELECT id, room_id, name, language, is_active, created_by, created_at, updated_at
-		FROM files
-		WHERE room_id = $1 AND is_active = true
-		ORDER BY created_at ASC
-	`, roomID)
-	if err != nil {
-		return nil, fmt.Errorf("get files: %w", err)
-	}
-	defer rows.Close()
-
-	var files []File
-	for rows.Next() {
-		var f File
-		if err := rows.Scan(
-			&f.ID, &f.RoomID, &f.Name, &f.Language,
-			&f.IsActive, &f.CreatedBy, &f.CreatedAt, &f.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan file: %w", err)
-		}
-		files = append(files, f)
-	}
-	return files, nil
-}
-
-// AddMember adds a user to a room with a given role.
-// Uses ON CONFLICT DO UPDATE so calling it again just updates the role.
 func AddMember(ctx context.Context, db *pgxpool.Pool, roomID, userID, role string) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO room_members (room_id, user_id, role)
@@ -148,7 +109,6 @@ func AddMember(ctx context.Context, db *pgxpool.Pool, roomID, userID, role strin
 	return nil
 }
 
-// DeleteRoom deletes a room — CASCADE handles files and room_members automatically.
 func DeleteRoom(ctx context.Context, db *pgxpool.Pool, roomID string) error {
 	_, err := db.Exec(ctx, `DELETE FROM rooms WHERE id = $1`, roomID)
 	if err != nil {

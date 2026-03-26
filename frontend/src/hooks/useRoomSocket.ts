@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react"
 import { useNavigate } from "react-router-dom"
+import type { File } from "../pages/RoomPage"
 
 const COLORS = [
   "#f87171", "#fb923c", "#fbbf24", "#4ade80",
@@ -23,6 +24,7 @@ interface IncomingEvent {
   user_id?: string
   role?:    string
   name?:    string
+  files?:   File[]
 }
 
 export interface OnlineUser {
@@ -33,10 +35,11 @@ export interface OnlineUser {
 }
 
 interface UseRoomSocketOptions {
-  roomId:        string
-  currentUserId: string
-  currentName:   string
-  onRoleChanged: (newRole: string) => void
+  roomId:         string
+  currentUserId:  string
+  currentName:    string
+  onRoleChanged:  (newRole: string) => void
+  onFilesUpdated: (files: File[]) => void
 }
 
 export function useRoomSocket({
@@ -44,6 +47,7 @@ export function useRoomSocket({
   currentUserId,
   currentName,
   onRoleChanged,
+  onFilesUpdated,
 }: UseRoomSocketOptions) {
   const navigate                      = useNavigate()
   const [onlineUsers, setOnlineUsers] = useState<Map<string, OnlineUser>>(new Map())
@@ -63,6 +67,7 @@ export function useRoomSocket({
     }
 
     ws.onmessage = (e) => {
+      console.log(">>> room ws message:", e.data)
       const event: IncomingEvent = JSON.parse(e.data)
 
       if (event.type === "room_deleted") {
@@ -77,6 +82,11 @@ export function useRoomSocket({
 
       if (event.type === "role_changed" && event.user_id === currentUserId && event.role) {
         onRoleChanged(event.role)
+        return
+      }
+
+      if (event.type === "files_updated" && event.files) {
+        onFilesUpdated(event.files)
         return
       }
 

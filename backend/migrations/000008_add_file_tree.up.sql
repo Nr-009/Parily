@@ -1,0 +1,3 @@
+ALTER TABLE files ADD COLUMN parent_id UUID REFERENCES files(id) ON DELETE SET NULL;
+ALTER TABLE files ADD COLUMN is_folder BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE files ADD CONSTRAINT folder_has_no_language CHECK (is_folder = FALSE OR language = '');

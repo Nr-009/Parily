@@ -1,0 +1,3 @@
+ALTER TABLE files DROP CONSTRAINT IF EXISTS folder_has_no_language;
+ALTER TABLE files DROP COLUMN IF EXISTS parent_id;
+ALTER TABLE files DROP COLUMN IF EXISTS is_folder;

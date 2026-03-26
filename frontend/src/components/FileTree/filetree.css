@@ -1,0 +1,253 @@
+.ft-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  user-select: none;
+}
+
+/* ── header ── */
+.ft-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0.75rem 0.4rem;
+}
+
+.ft-header-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ft-header-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.ft-icon-btn {
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  line-height: 1;
+  transition: color 0.1s, background 0.1s;
+}
+
+.ft-icon-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+
+/* ── rows ── */
+.ft-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+  padding-right: 0.75rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  text-align: left;
+  transition: background 0.1s, color 0.1s;
+}
+
+.ft-row:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.ft-row.active {
+  background: var(--accent-subtle);
+  color: var(--accent-text);
+}
+
+.ft-row.trash {
+  opacity: 0.5;
+}
+
+.ft-row.trash:hover {
+  opacity: 0.75;
+}
+
+/* ── chevron ── */
+.ft-chevron {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  transition: transform 0.15s;
+  display: inline-block;
+  width: 10px;
+  flex-shrink: 0;
+}
+
+.ft-chevron.open {
+  transform: rotate(90deg);
+}
+
+/* ── icons ── */
+.ft-icon {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.ft-row.active .ft-icon {
+  color: var(--accent-text);
+}
+
+/* ── name ── */
+.ft-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── language badge ── */
+.ft-lang {
+  font-size: 0.625rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+/* ── inline input ── */
+.ft-inline-input {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-top: 0.35rem;
+  padding-bottom: 0.35rem;
+  padding-right: 0.75rem;
+}
+
+.ft-name-input {
+  flex: 1;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.4rem;
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+/* ── language select ── */
+.ft-lang-select {
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+  padding-right: 0.75rem;
+}
+
+.ft-lang-select select {
+  width: 100%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.25rem 0.4rem;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  outline: none;
+  cursor: pointer;
+}
+
+/* ── trash section ── */
+.ft-trash-section {
+  margin-top: auto;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.25rem;
+}
+
+.ft-trash-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.35rem 0.75rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-align: left;
+  transition: color 0.1s;
+}
+
+.ft-trash-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.ft-trash-count {
+  font-size: 0.6875rem;
+  background: var(--bg-elevated);
+  border-radius: 10px;
+  padding: 0 0.35rem;
+  color: var(--text-tertiary);
+}
+
+/* ── context menu ── */
+.ft-context {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  padding: 0.25rem;
+  min-width: 140px;
+}
+
+.ft-ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.35rem 0.6rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  text-align: left;
+  transition: background 0.1s, color 0.1s;
+}
+
+.ft-ctx-item:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.ft-ctx-item.danger:hover {
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+
+.ft-ctx-divider {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 0.25rem 0;
+}
+
+/* ── node wrapper ── */
+.ft-node {
+  display: flex;
+  flex-direction: column;
+}

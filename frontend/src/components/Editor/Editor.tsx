@@ -14,13 +14,15 @@ interface Props {
   currentUserId: string
   currentName:   string
   currentColor:  string
+  onSaveReady:   (saveFn: () => void) => void
 }
 
-export function Editor({ roomId, fileId, role, language, currentUserId, currentName, currentColor }: Props) {
+export function Editor({ roomId, fileId, role, language, currentUserId, currentName, currentColor, onSaveReady }: Props) {
   const [editorInstance, setEditorInstance] =
     useState<MonacoEditorType.IStandaloneCodeEditor | null>(null)
 
   const decorationsRef = useRef<Map<number, string[]>>(new Map())
+  const isRenderingRef = useRef(false)
 
   const { status, save, providerRef } = useYjs({
     roomId,
@@ -31,7 +33,10 @@ export function Editor({ roomId, fileId, role, language, currentUserId, currentN
     currentColor,
   })
 
-  // Cmd+S save
+  useEffect(() => {
+    onSaveReady(save)
+  }, [save, onSaveReady])
+
   useEffect(() => {
     if (!editorInstance) return
     const disposable = editorInstance.addAction({
@@ -43,7 +48,6 @@ export function Editor({ roomId, fileId, role, language, currentUserId, currentN
     return () => disposable.dispose()
   }, [editorInstance, save])
 
-  // Cursor and selection → write to awareness
   useEffect(() => {
     if (!editorInstance || !providerRef.current) return
 
@@ -70,89 +74,90 @@ export function Editor({ roomId, fileId, role, language, currentUserId, currentN
     return () => disposable.dispose()
   }, [editorInstance, providerRef.current])
 
-  // Awareness changes → render remote cursors and selections
   useEffect(() => {
     if (!editorInstance || !providerRef.current) return
 
     const provider = providerRef.current
 
     const renderCursors = () => {
-      const states    = provider.awareness.getStates()
-      const localId   = provider.awareness.clientID
+      if (isRenderingRef.current) return
+      isRenderingRef.current = true
+      try {
+        const states  = provider.awareness.getStates()
+        const localId = provider.awareness.clientID
 
-      states.forEach((state, clientId) => {
-        if (clientId === localId) return
-        if (!state.user || !state.cursor) return
+        states.forEach((state, clientId) => {
+          if (clientId === localId) return
+          if (!state.user || !state.cursor) return
 
-        const { color, name } = state.user
-        const { lineNumber, column } = state.cursor
+          const { color, name } = state.user
+          const { lineNumber, column } = state.cursor
 
-        const newDecorations: MonacoEditorType.IModelDeltaDecoration[] = []
+          const newDecorations: MonacoEditorType.IModelDeltaDecoration[] = []
 
-        // Cursor bar decoration
-        newDecorations.push({
-          range: new monaco.Range(lineNumber, column, lineNumber, column),
-          options: {
-            className:             `remote-cursor-${clientId}`,
-            beforeContentClassName: `remote-cursor-label-${clientId}`,
-            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
-          },
-        })
-
-        // Selection highlight decoration
-        if (state.selection) {
-          const { startLine, startCol, endLine, endCol } = state.selection
           newDecorations.push({
-            range: new monaco.Range(startLine, startCol, endLine, endCol),
+            range: new monaco.Range(lineNumber, column, lineNumber, column),
             options: {
-              className: `remote-selection-${clientId}`,
+              className:              `remote-cursor-${clientId}`,
+              beforeContentClassName: `remote-cursor-label-${clientId}`,
               stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
             },
           })
-        }
 
-        // Inject per-user CSS if not already done
-        const styleId = `remote-cursor-style-${clientId}`
-        if (!document.getElementById(styleId)) {
-          const style       = document.createElement("style")
-          style.id          = styleId
-          style.textContent = `
-            .remote-cursor-${clientId} {
-              border-left: 2px solid ${color};
-            }
-            .remote-cursor-label-${clientId}::before {
-              content: "${name}";
-              background: ${color};
-              color: #fff;
-              font-size: 10px;
-              font-family: var(--font-sans);
-              padding: 1px 4px;
-              border-radius: 2px;
-              position: absolute;
-              top: -18px;
-              white-space: nowrap;
-              pointer-events: none;
-            }
-            .remote-selection-${clientId} {
-              background: ${color}33;
-            }
-          `
-          document.head.appendChild(style)
-        }
+          if (state.selection) {
+            const { startLine, startCol, endLine, endCol } = state.selection
+            newDecorations.push({
+              range: new monaco.Range(startLine, startCol, endLine, endCol),
+              options: {
+                className: `remote-selection-${clientId}`,
+                stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+              },
+            })
+          }
 
-        const prev = decorationsRef.current.get(clientId) ?? []
-        const next = editorInstance.deltaDecorations(prev, newDecorations)
-        decorationsRef.current.set(clientId, next)
-      })
+          const styleId = `remote-cursor-style-${clientId}`
+          if (!document.getElementById(styleId)) {
+            const style       = document.createElement("style")
+            style.id          = styleId
+            style.textContent = `
+              .remote-cursor-${clientId} {
+                border-left: 2px solid ${color};
+              }
+              .remote-cursor-label-${clientId}::before {
+                content: "${name}";
+                background: ${color};
+                color: #fff;
+                font-size: 10px;
+                font-family: var(--font-sans);
+                padding: 1px 4px;
+                border-radius: 2px;
+                position: absolute;
+                top: -18px;
+                white-space: nowrap;
+                pointer-events: none;
+              }
+              .remote-selection-${clientId} {
+                background: ${color}33;
+              }
+            `
+            document.head.appendChild(style)
+          }
 
-      // Clear decorations for users who left awareness
-      decorationsRef.current.forEach((ids, clientId) => {
-        if (!states.has(clientId) || clientId === localId) {
-          editorInstance.deltaDecorations(ids, [])
-          decorationsRef.current.delete(clientId)
-          document.getElementById(`remote-cursor-style-${clientId}`)?.remove()
-        }
-      })
+          const prev = decorationsRef.current.get(clientId) ?? []
+          const next = editorInstance.deltaDecorations(prev, newDecorations)
+          decorationsRef.current.set(clientId, next)
+        })
+
+        decorationsRef.current.forEach((ids, clientId) => {
+          if (!states.has(clientId) || clientId === localId) {
+            editorInstance.deltaDecorations(ids, [])
+            decorationsRef.current.delete(clientId)
+            document.getElementById(`remote-cursor-style-${clientId}`)?.remove()
+          }
+        })
+      } finally {
+        isRenderingRef.current = false
+      }
     }
 
     provider.awareness.on("change", renderCursors)

@@ -35,11 +35,13 @@ export interface OnlineUser {
 }
 
 interface UseRoomSocketOptions {
-  roomId:         string
-  currentUserId:  string
-  currentName:    string
-  onRoleChanged:  (newRole: string) => void
-  onFilesUpdated: (files: File[]) => void
+  roomId:           string
+  currentUserId:    string
+  currentName:      string
+  onRoleChanged:    (newRole: string) => void
+  onFilesUpdated:   (files: File[]) => void
+  onRoomRenamed?:   (name: string) => void
+  onMemberRemoved?: (userId: string) => void
 }
 
 export function useRoomSocket({
@@ -48,6 +50,8 @@ export function useRoomSocket({
   currentName,
   onRoleChanged,
   onFilesUpdated,
+  onRoomRenamed,
+  onMemberRemoved,
 }: UseRoomSocketOptions) {
   const navigate                      = useNavigate()
   const [onlineUsers, setOnlineUsers] = useState<Map<string, OnlineUser>>(new Map())
@@ -67,7 +71,6 @@ export function useRoomSocket({
     }
 
     ws.onmessage = (e) => {
-      console.log(">>> room ws message:", e.data)
       const event: IncomingEvent = JSON.parse(e.data)
 
       if (event.type === "room_deleted") {
@@ -80,8 +83,22 @@ export function useRoomSocket({
         return
       }
 
+      if (event.type === "member_left" && event.user_id) {
+        if (event.user_id === currentUserId) {
+          navigate("/dashboard")
+        } else {
+          onMemberRemoved?.(event.user_id)
+        }
+        return
+      }
+
       if (event.type === "role_changed" && event.user_id === currentUserId && event.role) {
         onRoleChanged(event.role)
+        return
+      }
+
+      if (event.type === "room_renamed" && event.name) {
+        onRoomRenamed?.(event.name)
         return
       }
 

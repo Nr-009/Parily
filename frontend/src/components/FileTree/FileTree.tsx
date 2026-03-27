@@ -193,6 +193,20 @@ export function FileTree({ roomId, files, activeFile, currentRole, onFileClick, 
     await handleToggle(node.file)
   }
 
+  const ctxPermanentDelete = async (node: FileNode) => {
+    setContext(null)
+    if (!window.confirm(`Permanently delete "${node.file.name}"? This cannot be undone.`)) return
+    try {
+      await apiFetch(`/api/rooms/${roomId}/files/${node.file.id}/permanent`, {
+        method:      "DELETE",
+        credentials: "include",
+      })
+      onFilesChange(files.filter(f => f.id !== node.file.id))
+    } catch (err: any) {
+      console.error("permanent delete failed:", err.message)
+    }
+  }
+
   // ── render helpers ───────────────────────────────────────────────────────
 
   const renderInlineInput = (parentId: string | null, isFolder: boolean) => (
@@ -336,9 +350,15 @@ export function FileTree({ roomId, files, activeFile, currentRole, onFileClick, 
           style={{ top: context.y, left: context.x }}
         >
           {context.isTrash ? (
-            <button className="ft-ctx-item" onClick={() => context.node && ctxRestore(context.node)}>
-              Restore
-            </button>
+            <>
+              <button className="ft-ctx-item" onClick={() => context.node && ctxRestore(context.node)}>
+                Restore
+              </button>
+              <div className="ft-ctx-divider" />
+              <button className="ft-ctx-item danger" onClick={() => context.node && ctxPermanentDelete(context.node)}>
+                Delete permanently
+              </button>
+            </>
           ) : (
             <>
               {/* folder or root → show create options */}

@@ -161,3 +161,45 @@
   text-align: center;
   flex-shrink: 0;
 }
+
+/* ── Room name (rename) ── */
+.room-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0.1rem 0.25rem;
+  border-radius: var(--radius-sm);
+  transition: color 0.1s, background 0.1s;
+}
+.room-name:hover {
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+}
+.room-name-input {
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.4rem;
+  color: var(--text-primary);
+  outline: none;
+  font-family: var(--font-sans);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
+}
+
+.room-leave {
+  font-size: 0.75rem;
+  color: var(--danger);
+  background: none;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  transition: background 0.1s, color 0.1s;
+}
+.room-leave:hover {
+  background: var(--danger-subtle);
+}

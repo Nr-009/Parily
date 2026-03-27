@@ -27,6 +27,8 @@ export default function RoomPage() {
   const navigate                       = useNavigate()
 
   const [role, setRole]             = useState<string | null>(null)
+  const [roomName, setRoomName]     = useState<string>("")
+  const [renamingRoom, setRenamingRoom] = useState(false)
   const [files, setFiles]           = useState<File[]>([])
   const [members, setMembers]       = useState<Member[]>([])
   const [activeFile, setActiveFile] = useState<File | null>(null)
@@ -52,6 +54,7 @@ export default function RoomPage() {
           apiFetch(`/api/rooms/${roomId}/members`),
         ])
         setRole(roleData.role)
+        setRoomName(roleData.name ?? "")
 
         const allFiles: File[] = filesData.files ?? []
         setFiles(allFiles)
@@ -78,6 +81,10 @@ export default function RoomPage() {
     currentUserId,
     currentName,
     onRoleChanged:  (newRole) => setRole(newRole),
+    onRoomRenamed:   (name) => setRoomName(name),
+    onMemberRemoved: (userId) => {
+      setMembers(prev => prev.filter(m => m.user_id !== userId))
+    },
     onFilesUpdated: (updated) => {
       setFiles(updated)
       const current = activeFileRef.current
@@ -133,8 +140,50 @@ export default function RoomPage() {
           ← Dashboard
         </button>
         <div className="room-info">
+          {renamingRoom && role === "owner" ? (
+            <input
+              className="room-name-input"
+              defaultValue={roomName}
+              autoFocus
+              onBlur={async (e) => {
+                const name = e.target.value.trim()
+                if (name && name !== roomName) {
+                  await apiFetch(`/api/rooms/${roomId}/name`, {
+                    method: "PATCH",
+                    body: JSON.stringify({ name }),
+                  })
+                  setRoomName(name)
+                }
+                setRenamingRoom(false)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur()
+                if (e.key === "Escape") setRenamingRoom(false)
+              }}
+            />
+          ) : (
+            <span
+              className="room-name"
+              title={role === "owner" ? "Click to rename" : undefined}
+              onClick={() => role === "owner" && setRenamingRoom(true)}
+            >
+              {roomName}
+            </span>
+          )}
           <span className="room-active-file">{activeFile?.name ?? ""}</span>
           <span className="room-role" data-role={role}>{role}</span>
+          {role !== "owner" && (
+            <button
+              className="room-leave"
+              onClick={async () => {
+                if (!window.confirm("Leave this room?")) return
+                await apiFetch(`/api/rooms/${roomId}/leave`, { method: "DELETE" })
+                navigate("/dashboard")
+              }}
+            >
+              Leave
+            </button>
+          )}
         </div>
         <span className="room-user">{user?.email}</span>
       </header>

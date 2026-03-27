@@ -52,11 +52,19 @@ export function Sidebar({
         method: "POST",
         body:   JSON.stringify({ email: inviteEmail.trim(), role: inviteRole }),
       })
-      onMembersChange([...members, {
-        user_id: data.user.id,
-        name:    data.user.name,
-        role:    inviteRole,
-      }])
+      // avoid duplicate if member already exists
+      const exists = members.some(m => m.user_id === data.user.id)
+      if (!exists) {
+        onMembersChange([...members, {
+          user_id: data.user.id,
+          name:    data.user.name,
+          role:    inviteRole,
+        }])
+      } else {
+        onMembersChange(members.map(m =>
+          m.user_id === data.user.id ? { ...m, role: inviteRole } : m
+        ))
+      }
       setInviteEmail("")
     } catch (err: any) {
       setInviteError(err.message ?? "Could not invite")

@@ -83,12 +83,14 @@ func main() {
 	// ── Hubs ──────────────────────────────────────────────────────────────────
 	hub := wshandler.NewHub(redisClient, logger.Log)
 	roomHub := wshandler.NewRoomHub(redisClient, logger.Log)
+	notifyHub := wshandler.NewNotifyHub(redisClient, logger.Log)
 
 	// ── Handlers ──────────────────────────────────────────────────────────────
 	wsHandler := wshandler.NewHandler(hub, pgPool, cfg, logger.Log)
 	roomHandler := wshandler.NewRoomHandler(roomHub, pgPool, cfg, logger.Log)
+	notifyHandler := wshandler.NewNotifyHandler(notifyHub, pgPool, cfg, logger.Log)
 	authHandler := auth.NewHandler(pgPool, cfg, logger.Log)
-	roomsHandler := rooms.NewHandler(pgPool, mongoDB, redisClient)
+	roomsHandler := rooms.NewHandler(pgPool, mongoDB, redisClient, notifyHub)
 
 	// ── Router ────────────────────────────────────────────────────────────────
 	r := gin.New()
@@ -121,6 +123,8 @@ func main() {
 	r.GET("/ws/:roomId/:fileId", wsHandler.ServeWS)
 	// WebSocket — room channel (permissions + presence)
 	r.GET("/room-ws/:roomId", roomHandler.ServeRoom)
+	// WebSocket — user notification channel (dashboard only)
+	r.GET("/notify-ws", notifyHandler.ServeNotify)
 
 	logger.Log.Info("Server listening", zap.String("port", cfg.ServerPort))
 	if err := r.Run(":" + cfg.ServerPort); err != nil {

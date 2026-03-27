@@ -6,16 +6,18 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 
 	"parily.dev/app/internal/redis"
+	wshandler "parily.dev/app/internal/websocket"
 )
 
 type Handler struct {
-	db      *pgxpool.Pool
-	mongoDB *mongo.Database
-	rdb     *redis.Client
+	db        *pgxpool.Pool
+	mongoDB   *mongo.Database
+	rdb       *redis.Client
+	notifyHub *wshandler.NotifyHub
 }
 
-func NewHandler(db *pgxpool.Pool, mongoDB *mongo.Database, rdb *redis.Client) *Handler {
-	return &Handler{db: db, mongoDB: mongoDB, rdb: rdb}
+func NewHandler(db *pgxpool.Pool, mongoDB *mongo.Database, rdb *redis.Client, notifyHub *wshandler.NotifyHub) *Handler {
+	return &Handler{db: db, mongoDB: mongoDB, rdb: rdb, notifyHub: notifyHub}
 }
 
 func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
@@ -23,11 +25,14 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("", h.ListRooms)
 	rg.GET("/:roomID/role", h.GetRole)
 	rg.DELETE("/:roomID", h.DeleteRoom)
+	rg.PATCH("/:roomID/name", h.RenameRoom)
+	rg.DELETE("/:roomID/leave", h.LeaveRoom)
 
 	rg.GET("/:roomID/files", h.GetFiles)
 	rg.POST("/:roomID/files", h.CreateFile)
 	rg.PATCH("/:roomID/files/:fileID", h.UpdateFile)
 	rg.PATCH("/:roomID/files/:fileID/toggle", h.ToggleFile)
+	rg.DELETE("/:roomID/files/:fileID/permanent", h.PermanentDeleteFile)
 	rg.POST("/:roomID/files/:fileID/state", h.SaveState)
 	rg.GET("/:roomID/files/:fileID/state", h.LoadState)
 
@@ -35,9 +40,4 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/:roomID/members", h.ListMembers)
 	rg.DELETE("/:roomID/members/:userID", h.RemoveMember)
 	rg.PATCH("/:roomID/members/:userID", h.UpdateMemberRole)
-	rg.DELETE("/:roomID/leave", h.LeaveRoom)
-
-	rg.PATCH("/:roomID/name", h.RenameRoom)
-
-	rg.DELETE("/:roomID/files/:fileID/permanent", h.PermanentDeleteFile)
 }

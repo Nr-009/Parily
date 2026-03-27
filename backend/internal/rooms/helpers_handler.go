@@ -3,10 +3,8 @@ package rooms
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"time"
-
 	"github.com/gin-gonic/gin"
 
 	pg "parily.dev/app/internal/postgres"
@@ -20,18 +18,15 @@ func (h *Handler) publishPermission(roomID string, event map[string]string) {
 // publishFiles fetches all files for the room and broadcasts to all clients
 // via the room channel so every client rebuilds their file tree in sync.
 func (h *Handler) publishFiles(ctx context.Context, roomID string) {
-	fmt.Println(">>> publishFiles called for room:", roomID)
 	files, err := pg.GetFilesForRoom(ctx, h.db, roomID)
 	if err != nil {
 		return
 	}
-	fmt.Println(">>> got files:", len(files), "err:", err)
 	result := make([]gin.H, 0, len(files))
 	for _, f := range files {
 		f := f
 		result = append(result, fileResponse(&f))
 	}
-
 	data, err := json.Marshal(map[string]any{
 		"type":  "files_updated",
 		"files": result,
@@ -39,8 +34,31 @@ func (h *Handler) publishFiles(ctx context.Context, roomID string) {
 	if err != nil {
 		return
 	}
-	err2 := h.rdb.Publish("room:"+roomID+":room", data)
-	fmt.Println(">>> publish err:", err2)
+	h.rdb.Publish("room:"+roomID+":room", data)
+}
+
+// publishNotification sends a notification to a specific user via NotifyHub.
+func (h *Handler) publishNotification(userID string, event map[string]any) {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	h.notifyHub.Publish(userID, data)
+}
+
+// publishNotificationToMembers sends a notification to all members of a room.
+func (h *Handler) publishNotificationToMembers(ctx context.Context, roomID string, event map[string]any) {
+	memberIDs, err := pg.GetRoomMemberIDs(ctx, h.db, roomID)
+	if err != nil {
+		return
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	for _, userID := range memberIDs {
+		h.notifyHub.Publish(userID, data)
+	}
 }
 
 func langFromExtension(name string) string {

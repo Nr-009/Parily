@@ -41,6 +41,28 @@ func ListMembers(ctx context.Context, db *pgxpool.Pool, roomID string) ([]Member
 	return members, nil
 }
 
+// GetRoomMemberIDs returns just the user IDs of all members in a room.
+// Used to fan out notifications to all members efficiently.
+func GetRoomMemberIDs(ctx context.Context, db *pgxpool.Pool, roomID string) ([]string, error) {
+	rows, err := db.Query(ctx, `
+		SELECT user_id FROM room_members WHERE room_id = $1
+	`, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("get room member ids: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan member id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // RemoveMember deletes a user from room_members.
 func RemoveMember(ctx context.Context, db *pgxpool.Pool, roomID, userID string) error {
 	_, err := db.Exec(ctx, `

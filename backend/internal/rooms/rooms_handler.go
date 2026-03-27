@@ -86,6 +86,8 @@ func (h *Handler) GetRole(c *gin.Context) {
 func (h *Handler) DeleteRoom(c *gin.Context) {
 	roomID := c.Param("roomID")
 	callerID := c.GetString("userID")
+	var roomName string
+	_ = h.db.QueryRow(c.Request.Context(), `SELECT name FROM rooms WHERE id = $1`, roomID).Scan(&roomName)
 	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, callerID)
 	if err == pgx.ErrNoRows {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
@@ -99,6 +101,13 @@ func (h *Handler) DeleteRoom(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only owner can delete the room"})
 		return
 	}
+	// notify members BEFORE deleting — cascade wipes room_members on delete
+	h.publishNotificationToMembers(c.Request.Context(), roomID, map[string]any{
+		"type":      "room_deleted",
+		"room_id":   roomID,
+		"room_name": roomName,
+	})
+
 	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
 	if err := docRepo.DeleteDocumentsByRoom(c.Request.Context(), roomID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete documents"})
@@ -146,6 +155,11 @@ func (h *Handler) RenameRoom(c *gin.Context) {
 	h.publishPermission(roomID, map[string]string{
 		"type": "room_renamed",
 		"name": strings.TrimSpace(req.Name),
+	})
+	h.publishNotificationToMembers(c.Request.Context(), roomID, map[string]any{
+		"type":    "room_renamed",
+		"room_id": roomID,
+		"name":    strings.TrimSpace(req.Name),
 	})
 	c.JSON(http.StatusOK, gin.H{"message": "room renamed", "name": strings.TrimSpace(req.Name)})
 }

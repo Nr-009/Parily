@@ -1,4 +1,5 @@
 package rooms
+
 import (
 	"net/http"
 	"strings"
@@ -76,7 +77,10 @@ func (h *Handler) GetRole(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"role": role})
+	// also return the room name so the frontend can display it
+	var roomName string
+	_ = h.db.QueryRow(c.Request.Context(), `SELECT name FROM rooms WHERE id = $1`, roomID).Scan(&roomName)
+	c.JSON(http.StatusOK, gin.H{"role": role, "name": roomName})
 }
 
 func (h *Handler) DeleteRoom(c *gin.Context) {
@@ -106,4 +110,71 @@ func (h *Handler) DeleteRoom(c *gin.Context) {
 	}
 	h.publishPermission(roomID, map[string]string{"type": "room_deleted"})
 	c.JSON(http.StatusOK, gin.H{"message": "room deleted"})
+}
+
+type renameRoomRequest struct {
+	Name string `json:"name" binding:"required,min=1,max=100"`
+}
+
+// RenameRoom updates the room name. Owner only.
+// Broadcasts room_renamed so all connected clients can update their header.
+func (h *Handler) RenameRoom(c *gin.Context) {
+	roomID := c.Param("roomID")
+	callerID := c.GetString("userID")
+	var req renameRoomRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, callerID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if role != "owner" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only owner can rename the room"})
+		return
+	}
+	if err := pg.RenameRoom(c.Request.Context(), h.db, roomID, strings.TrimSpace(req.Name)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not rename room"})
+		return
+	}
+	h.publishPermission(roomID, map[string]string{
+		"type": "room_renamed",
+		"name": strings.TrimSpace(req.Name),
+	})
+	c.JSON(http.StatusOK, gin.H{"message": "room renamed", "name": strings.TrimSpace(req.Name)})
+}
+
+// LeaveRoom removes the caller from the room. Owner cannot leave.
+// Reuses the removed event so frontend already handles it (navigates to dashboard).
+func (h *Handler) LeaveRoom(c *gin.Context) {
+	roomID := c.Param("roomID")
+	callerID := c.GetString("userID")
+	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, callerID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if role == "owner" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "owner cannot leave — delete the room or transfer ownership"})
+		return
+	}
+	if err := pg.LeaveRoom(c.Request.Context(), h.db, roomID, callerID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not leave room"})
+		return
+	}
+	h.publishPermission(roomID, map[string]string{
+		"type":    "member_left",
+		"user_id": callerID,
+	})
+	c.JSON(http.StatusOK, gin.H{"message": "left room"})
 }

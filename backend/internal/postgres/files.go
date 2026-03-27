@@ -241,3 +241,49 @@ func MoveFolder(ctx context.Context, db *pgxpool.Pool, folderID string, parentID
 	}
 	return f, nil
 }
+
+// GetFileDescendantIDs returns all file (non-folder) IDs in the subtree rooted at fileID.
+// Used before permanent delete to find which MongoDB documents to remove.
+func GetFileDescendantIDs(ctx context.Context, db *pgxpool.Pool, fileID string) ([]string, error) {
+	rows, err := db.Query(ctx, `
+		WITH RECURSIVE subtree AS (
+			SELECT id, is_folder FROM files WHERE id = $1
+			UNION ALL
+			SELECT f.id, f.is_folder FROM files f
+			INNER JOIN subtree s ON f.parent_id = s.id
+		)
+		SELECT id FROM subtree WHERE is_folder = FALSE
+	`, fileID)
+	if err != nil {
+		return nil, fmt.Errorf("get file descendants: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan file id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// PermanentDeleteFile hard deletes a file or folder and all its descendants.
+// Caller is responsible for deleting MongoDB documents first.
+func PermanentDeleteFile(ctx context.Context, db *pgxpool.Pool, fileID string) error {
+	_, err := db.Exec(ctx, `
+		WITH RECURSIVE subtree AS (
+			SELECT id FROM files WHERE id = $1
+			UNION ALL
+			SELECT f.id FROM files f
+			INNER JOIN subtree s ON f.parent_id = s.id
+		)
+		DELETE FROM files WHERE id IN (SELECT id FROM subtree)
+	`, fileID)
+	if err != nil {
+		return fmt.Errorf("permanent delete file: %w", err)
+	}
+	return nil
+}

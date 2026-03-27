@@ -225,6 +225,52 @@ func (h *Handler) ToggleFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"file": fileResponse(updated)})
 }
 
+// PermanentDeleteFile hard deletes a file or folder and all its descendants.
+// Deletes MongoDB documents for all file descendants first, then hard DELETEs from DB.
+func (h *Handler) PermanentDeleteFile(c *gin.Context) {
+	roomID := c.Param("roomID")
+	fileID := c.Param("fileID")
+	userID := c.GetString("userID")
+	fmt.Println(">>> PermanentDeleteFile called room:", roomID, "file:", fileID)
+
+	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+	if role == "viewer" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "viewers cannot delete files"})
+		return
+	}
+
+	// get all file (non-folder) descendant IDs to clean up MongoDB
+	fileIDs, err := pg.GetFileDescendantIDs(c.Request.Context(), h.db, fileID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not resolve descendants"})
+		return
+	}
+
+	// delete MongoDB documents for all file descendants
+	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
+	for _, id := range fileIDs {
+		// best effort — don't fail if doc doesn't exist
+		_ = docRepo.DeleteDocument(c.Request.Context(), id)
+	}
+
+	// hard delete from DB (recursive CTE deletes entire subtree)
+	if err := pg.PermanentDeleteFile(c.Request.Context(), h.db, fileID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not permanently delete"})
+		return
+	}
+
+	h.publishFiles(c.Request.Context(), roomID)
+	c.JSON(http.StatusOK, gin.H{"message": "permanently deleted"})
+}
+
 func (h *Handler) SaveState(c *gin.Context) {
 	roomID := c.Param("roomID")
 	fileID := c.Param("fileID")

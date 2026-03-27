@@ -116,3 +116,25 @@ func DeleteRoom(ctx context.Context, db *pgxpool.Pool, roomID string) error {
 	}
 	return nil
 }
+
+// RenameRoom updates the name of a room. Owner only (caller enforces).
+func RenameRoom(ctx context.Context, db *pgxpool.Pool, roomID, name string) error {
+	_, err := db.Exec(ctx, `
+		UPDATE rooms SET name = $2 WHERE id = $1
+	`, roomID, name)
+	if err != nil {
+		return fmt.Errorf("rename room: %w", err)
+	}
+	return nil
+}
+
+// LeaveRoom removes a member from a room. Owner cannot leave (caller enforces).
+func LeaveRoom(ctx context.Context, db *pgxpool.Pool, roomID, userID string) error {
+	_, err := db.Exec(ctx, `
+		DELETE FROM room_members WHERE room_id = $1 AND user_id = $2
+	`, roomID, userID)
+	if err != nil {
+		return fmt.Errorf("leave room: %w", err)
+	}
+	return nil
+}

@@ -35,4 +35,9 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	rg.GET("/:roomID/members", h.ListMembers)
 	rg.DELETE("/:roomID/members/:userID", h.RemoveMember)
 	rg.PATCH("/:roomID/members/:userID", h.UpdateMemberRole)
+	rg.DELETE("/:roomID/leave", h.LeaveRoom)
+
+	rg.PATCH("/:roomID/name", h.RenameRoom)
+
+	rg.DELETE("/:roomID/files/:fileID/permanent", h.PermanentDeleteFile)
 }

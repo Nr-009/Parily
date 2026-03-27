@@ -74,6 +74,16 @@ func (r *DocumentRepository) SaveDocument(ctx context.Context, fileID string, st
 	return nil
 }
 
+// DeleteDocument deletes the Yjs document for a single file.
+// Used when permanently deleting a file.
+func (r *DocumentRepository) DeleteDocument(ctx context.Context, fileID string) error {
+	_, err := r.col.DeleteOne(ctx, bson.M{"file_id": fileID})
+	if err != nil {
+		return fmt.Errorf("delete document: %w", err)
+	}
+	return nil
+}
+
 // DeleteDocumentsByRoom deletes all Yjs documents for a room from MongoDB.
 func (r *DocumentRepository) DeleteDocumentsByRoom(ctx context.Context, roomID string) error {
 	_, err := r.col.DeleteMany(ctx, bson.M{"room_id": roomID})

@@ -291,3 +291,36 @@
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+
+
+/* Add these to your existing room.css */
+
+/* right side of header — history button + user email */
+.room-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+/* history trigger button */
+.vh-trigger-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  background: #2a2a2a;
+  color: #aaa;
+  border: 1px solid #444;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.vh-trigger-btn:hover {
+  background: #333;
+  color: #ddd;
+}
+.vh-trigger-btn--active {
+  background: #1a2d45;
+  color: #4a9eff;
+  border-color: #4a9eff;
+}

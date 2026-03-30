@@ -6,6 +6,7 @@ import type { ExecutionResult } from "../hooks/useRoomSocket"
 import { Sidebar } from "../components/Sidebar/sidebar"
 import { Editor } from "../components/Editor/Editor"
 import { OutputPanel } from "../components/OutputPanel/OutputPanel"
+import VersionHistory from "../components/VersionHistory/VersionHistory"
 import { Group, Panel, Separator } from "react-resizable-panels"
 import "./room.css"
 
@@ -26,6 +27,8 @@ interface Member {
 
 type RunState = "idle" | "executing" | "done-ok" | "done-err"
 
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8080"
+
 export default function RoomPage() {
   const { roomId }                     = useParams<{ roomId: string }>()
   const { user, loading: authLoading } = useAuth()
@@ -39,6 +42,7 @@ export default function RoomPage() {
   const [activeFile, setActiveFile]     = useState<File | null>(null)
   const [loading, setLoading]           = useState(true)
   const [error, setError]               = useState("")
+  const [showHistory, setShowHistory]   = useState(false)
 
   const [runStateByFileId, setRunStateByFileId] = useState<Map<string, RunState>>(new Map())
   const [outputByFileId, setOutputByFileId]     = useState<Map<string, ExecutionResult>>(new Map())
@@ -46,9 +50,8 @@ export default function RoomPage() {
   const saveRef       = useRef<(() => void) | null>(null)
   const activeFileRef = useRef<File | null>(null)
 
-  useEffect(() => {
-    activeFileRef.current = activeFile
-  }, [activeFile])
+  useEffect(() => { activeFileRef.current = activeFile }, [activeFile])
+  useEffect(() => { setShowHistory(false) }, [activeFile?.id])
 
   useEffect(() => {
     const load = async () => {
@@ -77,7 +80,6 @@ export default function RoomPage() {
   useEffect(() => {
     if (!activeFile || !roomId) return
     if (outputByFileId.has(activeFile.id)) return
-
     apiFetch(`/api/rooms/${roomId}/files/${activeFile.id}/execution`)
       .then(res => {
         if (res && res.output !== undefined) {
@@ -182,6 +184,7 @@ export default function RoomPage() {
         <button className="room-back" onClick={() => navigate("/dashboard")}>
           ← Dashboard
         </button>
+
         <div className="room-info">
           {renamingRoom && role === "owner" ? (
             <input
@@ -242,7 +245,19 @@ export default function RoomPage() {
             </button>
           )}
         </div>
-        <span className="room-user">{user?.email}</span>
+
+        <div className="room-header-right">
+          {activeFile && !activeFile.is_folder && (
+            <button
+              className={`vh-trigger-btn ${showHistory ? "vh-trigger-btn--active" : ""}`}
+              onClick={() => setShowHistory(v => !v)}
+              title="Version History"
+            >
+              🕐 History
+            </button>
+          )}
+          <span className="room-user">{user?.email}</span>
+        </div>
       </header>
 
       <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
@@ -303,6 +318,16 @@ export default function RoomPage() {
 
         </Group>
       </div>
+
+      {showHistory && activeFile && roomId && role && (
+        <VersionHistory
+          roomId={roomId}
+          fileId={activeFile.id}
+          role={role}
+          apiBase={API_BASE}
+          onClose={() => setShowHistory(false)}
+        />
+      )}
     </div>
   )
 }

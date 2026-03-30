@@ -6,10 +6,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	ycrdt "github.com/skyterra/y-crdt"
 	"go.uber.org/zap"
 
 	"parily.dev/app/internal/kafka"
@@ -17,6 +19,24 @@ import (
 	mongoRepo "parily.dev/app/internal/mongo"
 	pg "parily.dev/app/internal/postgres"
 )
+
+// lastTextCache stores the last saved text per fileID.
+// If incoming Yjs blob decodes to the same text, we skip both
+// MongoDB and Kafka — content hasn't changed so no point recording it.
+var (
+	lastTextCache   = make(map[string]string)
+	lastTextCacheMu sync.Mutex
+)
+
+// yjsBlobToText decodes a Yjs binary update into plain text.
+// Same key "content" used by the frontend useYjs hook.
+func yjsBlobToText(blob []byte) string {
+	doc := ycrdt.NewDoc("dedup", false, nil, nil, false)
+	doc.Transact(func(trans *ycrdt.Transaction) {
+		ycrdt.ApplyUpdate(doc, blob, nil)
+	}, nil)
+	return doc.GetText("content").ToString()
+}
 
 func (h *Handler) GetFiles(c *gin.Context) {
 	roomID := c.Param("roomID")
@@ -230,8 +250,6 @@ func (h *Handler) ToggleFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"file": fileResponse(updated)})
 }
 
-// PermanentDeleteFile hard deletes a file or folder and all its descendants.
-// Deletes MongoDB documents for all file descendants first, then hard DELETEs from DB.
 func (h *Handler) PermanentDeleteFile(c *gin.Context) {
 	roomID := c.Param("roomID")
 	fileID := c.Param("fileID")
@@ -252,25 +270,30 @@ func (h *Handler) PermanentDeleteFile(c *gin.Context) {
 		return
 	}
 
-	// get all file (non-folder) descendant IDs to clean up MongoDB
 	fileIDs, err := pg.GetFileDescendantIDs(c.Request.Context(), h.db, fileID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not resolve descendants"})
 		return
 	}
 
-	// delete MongoDB documents for all file descendants
 	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
+	snapRepo := mongoRepo.NewSnapshotRepository(h.mongoDB)
 	for _, id := range fileIDs {
-		// best effort — don't fail if doc doesn't exist
+		// delete Yjs document for this file
 		_ = docRepo.DeleteDocument(c.Request.Context(), id)
+		// delete all text snapshots for this file so we don't leave orphaned data
+		_ = snapRepo.DeleteSnapshotsByFile(c.Request.Context(), id)
 	}
 
-	// hard delete from DB (recursive CTE deletes entire subtree)
 	if err := pg.PermanentDeleteFile(c.Request.Context(), h.db, fileID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not permanently delete"})
 		return
 	}
+
+	// evict from dedup cache when file is deleted
+	lastTextCacheMu.Lock()
+	delete(lastTextCache, fileID)
+	lastTextCacheMu.Unlock()
 
 	h.publishFiles(c.Request.Context(), roomID)
 	c.JSON(http.StatusOK, gin.H{"message": "permanently deleted"})
@@ -311,6 +334,22 @@ func (h *Handler) SaveState(c *gin.Context) {
 		return
 	}
 
+	// decode incoming Yjs blob to plain text and compare with last saved text
+	// if identical — content hasn't changed, skip MongoDB, Kafka, and snapshot entirely
+	incomingText := yjsBlobToText(state)
+
+	lastTextCacheMu.Lock()
+	lastText, exists := lastTextCache[fileID]
+	if exists && lastText == incomingText {
+		lastTextCacheMu.Unlock()
+		logger.Log.Info("skipping save — content unchanged", zap.String("file_id", fileID))
+		c.JSON(http.StatusOK, gin.H{"message": "saved"})
+		return
+	}
+	lastTextCache[fileID] = incomingText
+	lastTextCacheMu.Unlock()
+
+	// content changed — save Yjs binary to MongoDB, get back the new version number
 	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
 	version, err := docRepo.SaveDocument(c.Request.Context(), fileID, state)
 	if err != nil {
@@ -318,24 +357,55 @@ func (h *Handler) SaveState(c *gin.Context) {
 		return
 	}
 
+	// capture these for use inside goroutines — avoid closing over loop variables
+	capturedText := incomingText
+	capturedVersion := version
+
+	// publish Yjs blob + metadata to Kafka async
+	// using context.Background() + timeout — never the request context which
+	// cancels the moment we return the HTTP response
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		logger.Log.Info("publishing edit event to kafka",
 			zap.String("file_id", fileID),
-			zap.Int("version", version),
+			zap.Int("version", capturedVersion),
 		)
 		if err := h.kafka.PublishEditEvent(ctx, kafka.EditEvent{
 			RoomID:  roomID,
 			FileID:  fileID,
 			UserID:  userID,
 			YjsBlob: state,
-			Version: version,
+			Version: capturedVersion,
 			SavedAt: time.Now().UTC(),
 		}); err != nil {
 			logger.Log.Error("failed to publish edit event", zap.Error(err))
+			 // publish to dead letter so we have a record of what failed and why
+    		// we already have `state` (the raw Yjs blob) in scope — that's the payload
+			_ = h.kafka.PublishDeadLetter(ctx, "edit-events", state, err.Error())
 		} else {
 			logger.Log.Info("edit event published successfully", zap.String("file_id", fileID))
+		}
+	}()
+
+	// save plain text snapshot to MongoDB async — text is already decoded above
+	// so this goroutine does zero decoding work, just one MongoDB write
+	// GetHistoryAtVersion checks this collection first before falling back to Kafka replay
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		snapRepo := mongoRepo.NewSnapshotRepository(h.mongoDB)
+		if err := snapRepo.SaveSnapshot(ctx, fileID, roomID, capturedVersion, capturedText); err != nil {
+			logger.Log.Error("failed to save snapshot",
+				zap.String("file_id", fileID),
+				zap.Int("version", capturedVersion),
+				zap.Error(err),
+			)
+		} else {
+			logger.Log.Info("snapshot saved",
+				zap.String("file_id", fileID),
+				zap.Int("version", capturedVersion),
+			)
 		}
 	}()
 
@@ -376,10 +446,6 @@ func (h *Handler) LoadState(c *gin.Context) {
 	}
 	c.Data(http.StatusOK, "application/octet-stream", doc.YjsState)
 }
-
-
-
-
 
 func (h *Handler) GetLastExecution(c *gin.Context) {
 	roomID := c.Param("roomID")

@@ -39,6 +39,7 @@ type ExecutionEvent struct {
 type Producer struct {
 	editWriter      *kafka.Writer
 	executionWriter *kafka.Writer
+	deadLetterWriter  *kafka.Writer 
 }
 
 // NewProducer creates a Producer connected to the given broker.
@@ -64,6 +65,13 @@ func NewProducer(broker string) *Producer {
 			Balancer:     &kafka.Hash{},
 			RequiredAcks: kafka.RequireOne,
 			Async:        false,
+		},
+		deadLetterWriter: &kafka.Writer{
+    		Addr:         kafka.TCP(broker),
+    		Topic:        "dead-letter",
+    		Balancer:     &kafka.Hash{},
+    		RequiredAcks: kafka.RequireOne,
+    		Async:        false,
 		},
 	}
 }
@@ -103,8 +111,34 @@ func (p *Producer) PublishExecutionEvent(ctx context.Context, event ExecutionEve
 // Close shuts down both writers cleanly.
 // Call this in main() via defer after creating the producer.
 func (p *Producer) Close() error {
-	if err := p.editWriter.Close(); err != nil {
-		return err
-	}
-	return p.executionWriter.Close()
+    if err := p.editWriter.Close(); err != nil {
+        return err
+    }
+    if err := p.executionWriter.Close(); err != nil {
+        return err
+    }
+    return p.deadLetterWriter.Close()
+}
+
+type DeadLetterEvent struct {
+    OriginalTopic string    `json:"original_topic"`
+    Reason        string    `json:"reason"`
+    Payload       []byte    `json:"payload"`
+    FailedAt      time.Time `json:"failed_at"`
+}
+
+func (p *Producer) PublishDeadLetter(ctx context.Context, originalTopic string, payload []byte, reason string) error {
+    value, err := json.Marshal(DeadLetterEvent{
+        OriginalTopic: originalTopic,
+        Reason:        reason,
+        Payload:       payload,
+        FailedAt:      time.Now().UTC(),
+    })
+    if err != nil {
+        return err
+    }
+    return p.deadLetterWriter.WriteMessages(ctx, kafka.Message{
+        Key:   []byte(originalTopic),
+        Value: value,
+    })
 }

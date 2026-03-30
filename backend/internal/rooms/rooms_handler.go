@@ -101,6 +101,7 @@ func (h *Handler) DeleteRoom(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only owner can delete the room"})
 		return
 	}
+
 	// notify members BEFORE deleting — cascade wipes room_members on delete
 	h.publishNotificationToMembers(c.Request.Context(), roomID, map[string]any{
 		"type":      "room_deleted",
@@ -113,6 +114,15 @@ func (h *Handler) DeleteRoom(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete documents"})
 		return
 	}
+
+	// delete all text snapshots for this room — keyed directly on room_id,
+	// same pattern as DeleteDocumentsByRoom, no Postgres query needed
+	snapRepo := mongoRepo.NewSnapshotRepository(h.mongoDB)
+	if err := snapRepo.DeleteSnapshotsByRoom(c.Request.Context(), roomID); err != nil {
+		// non-fatal — orphaned snapshots waste space but don't break anything
+		_ = err
+	}
+
 	if err := pg.DeleteRoom(c.Request.Context(), h.db, roomID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not delete room"})
 		return

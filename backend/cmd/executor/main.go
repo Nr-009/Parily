@@ -100,6 +100,22 @@ func (s *executorServer) runExecution(roomID, fileID, executionID string) {
 
 	// save to MongoDB
 	execRepo := mongoRepo.NewExecutionRepository(s.mongoDB)
+	event := map[string]any{
+		"type":        "execution_done",
+		"file_id":     fileID,
+		"room_id":     roomID,
+		"exit_code":   result.ExitCode,
+		"duration_ms": result.DurationMs,
+		"output":      result.Output,
+		"truncated":   len(result.Output) >= 50*1024,
+	}
+	data, _ := json.Marshal(event)
+	if err := s.rdb.Publish(roomChannel(roomID), data); err != nil {
+		log.Printf("[main] failed to publish execution_done: %v", err)
+	}
+	log.Printf("[main] published execution_done to %s", roomChannel(roomID))
+	// publish execution_done to Redis — RoomHub delivers to all clients
+
 	if err := execRepo.SaveExecution(ctx, mongoRepo.ExecutionResult{
 		ExecutionID: executionID,
 		RoomID:      roomID,
@@ -116,37 +132,26 @@ func (s *executorServer) runExecution(roomID, fileID, executionID string) {
 	go func() {
     kctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
-    if err := s.kafka.PublishExecutionEvent(kctx, kafka.ExecutionEvent{
-        ExecutionID: executionID,
-        RoomID:      roomID,
-        FileID:      fileID,
-        Language:    language,
-        Output:      result.Output,
-        ExitCode:    result.ExitCode,
-        DurationMs:  result.DurationMs,
-        ExecutedAt:  time.Now().UTC(),
-    }); err != nil {
-        log.Printf("[main] failed to publish execution event to kafka: %v", err)
-    } else {
-        log.Printf("[main] execution event published to kafka file=%s", fileID)
-    }
+   	event := kafka.ExecutionEvent{
+    ExecutionID: executionID,
+    RoomID:      roomID,
+    FileID:      fileID,
+    Language:    language,
+    Output:      result.Output,
+    ExitCode:    result.ExitCode,
+    DurationMs:  result.DurationMs,
+    ExecutedAt:  time.Now().UTC(),
+	}
+	if err := s.kafka.PublishExecutionEvent(kctx, event); err != nil {
+    	log.Printf("[main] failed to publish execution event to kafka: %v", err)
+    	payload, _ := json.Marshal(event)
+    	_ = s.kafka.PublishDeadLetter(kctx, "execution-events", payload, err.Error())
+	} else {
+    	log.Printf("[main] execution event published to kafka file=%s", fileID)
+	}
 	}()
 
-	// publish execution_done to Redis — RoomHub delivers to all clients
-	event := map[string]any{
-		"type":        "execution_done",
-		"file_id":     fileID,
-		"room_id":     roomID,
-		"exit_code":   result.ExitCode,
-		"duration_ms": result.DurationMs,
-		"output":      result.Output,
-		"truncated":   len(result.Output) >= 50*1024,
-	}
-	data, _ := json.Marshal(event)
-	if err := s.rdb.Publish(roomChannel(roomID), data); err != nil {
-		log.Printf("[main] failed to publish execution_done: %v", err)
-	}
-	log.Printf("[main] published execution_done to %s", roomChannel(roomID))
+	
 }
 
 func (s *executorServer) publishError(roomID, fileID, reason string) {

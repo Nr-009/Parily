@@ -48,7 +48,6 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup) {
 	// history routes — 6.5
 	rg.GET("/:roomID/files/:fileID/history", h.GetHistory)
 	rg.GET("/:roomID/files/:fileID/history/:version", h.GetHistoryAtVersion)
-	rg.POST("/:roomID/files/:fileID/restore", h.RestoreVersion)
 
 	rg.POST("/:roomID/members", h.AddMember)
 	rg.GET("/:roomID/members", h.ListMembers)

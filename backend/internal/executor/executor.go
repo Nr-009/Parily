@@ -11,6 +11,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-units"
 )
 
 type LangConfig struct {
@@ -23,7 +24,7 @@ var langConfigs = map[string]LangConfig{
 	"javascript": {Image: "node:20-alpine", Command: []string{"node"}},
 	"typescript": {Image: "node:20-alpine", Command: []string{"npx", "ts-node"}},
 	"go":         {Image: "golang:1.21-alpine", Command: []string{"go", "run"}},
-	"java": {Image: "eclipse-temurin:21-alpine", Command: []string{"java"}},
+	"java":       {Image: "eclipse-temurin:21-alpine", Command: []string{"java"}},
 }
 
 type RunResult struct {
@@ -49,6 +50,7 @@ func RunContainer(cli *dockerclient.Client, tempDir, entryPath, language string)
 		Image:      cfg.Image,
 		Cmd:        cmd,
 		WorkingDir: "/workspace",
+		User:       "nobody",
 	}, &container.HostConfig{
 		Mounts: []mount.Mount{
 			{
@@ -58,10 +60,16 @@ func RunContainer(cli *dockerclient.Client, tempDir, entryPath, language string)
 				ReadOnly: true,
 			},
 		},
-		NetworkMode: "none",
+		NetworkMode:    "none",
+		ReadonlyRootfs: true,
+		SecurityOpt:    []string{"no-new-privileges"},
 		Resources: container.Resources{
-			Memory:   256 * 1024 * 1024,
-			NanoCPUs: 500000000,
+			Memory:    256 * 1024 * 1024,
+			NanoCPUs:  500000000,
+			PidsLimit: int64Ptr(64),
+			Ulimits: []*units.Ulimit{
+				{Name: "nofile", Soft: 64, Hard: 64},
+			},
 		},
 		AutoRemove: true,
 	}, nil, nil, "")
@@ -84,6 +92,7 @@ func RunContainer(cli *dockerclient.Client, tempDir, entryPath, language string)
 	log.Printf("[executor] waiting for container to finish...")
 
 	var exitCode int
+
 	select {
 	case err := <-errCh:
 		if err != nil {
@@ -139,3 +148,5 @@ func RunContainer(cli *dockerclient.Client, tempDir, entryPath, language string)
 		DurationMs: durationMs,
 	}, nil
 }
+
+func int64Ptr(i int64) *int64 { return &i }

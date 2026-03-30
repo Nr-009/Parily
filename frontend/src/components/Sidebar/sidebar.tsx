@@ -4,6 +4,7 @@ import type { OnlineUser } from "../../hooks/useRoomSocket"
 import type { File } from "../../pages/RoomPage"
 import { MembersList } from "./memberlist"
 import { FileTree } from "../FileTree/FileTree"
+import { Group, Panel, Separator } from "react-resizable-panels"
 import "./sidebar.css"
 
 interface Member {
@@ -73,59 +74,71 @@ export function Sidebar({
     }
   }
 
-  return (
-    <aside className="sidebar">
-      <FileTree
-        roomId={roomId}
-        files={files}
-        activeFile={activeFile}
-        currentRole={currentRole}
-        onFileClick={onFileClick}
-        onFilesChange={onFilesChange}
-      />
+ return (
+  <aside className="sidebar">
+    <Group orientation="vertical" style={{ height: "100%" }}>
 
-      <div className="sidebar-divider" />
+      <Panel minSize="20%">
+        <div className="sidebar-files-panel">
+          <FileTree
+            roomId={roomId}
+            files={files}
+            activeFile={activeFile}
+            currentRole={currentRole}
+            onFileClick={onFileClick}
+            onFilesChange={onFilesChange}
+          />
+        </div>
+      </Panel>
 
-      <div className="sidebar-section">
-        <div className="sidebar-label">Members</div>
-        <MembersList
-          roomId={roomId}
-          members={members}
-          currentRole={currentRole}
-          onlineUsers={onlineUsers}
-          onMembersChange={onMembersChange}
-        />
-        {isOwner && (
-          <form className="sidebar-invite" onSubmit={handleInvite}>
-            <div className="sidebar-label" style={{ marginTop: "0.75rem" }}>Invite</div>
-            <input
-              type="email"
-              placeholder="email"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              className="sidebar-invite-input"
+      <Separator className="resize-handle resize-handle--vertical" />
+
+      <Panel minSize="20%" defaultSize="40%">
+        <div className="sidebar-members-panel">
+          <div className="sidebar-section">
+            <div className="sidebar-label">Members</div>
+            <MembersList
+              roomId={roomId}
+              members={members}
+              currentRole={currentRole}
+              onlineUsers={onlineUsers}
+              onMembersChange={onMembersChange}
             />
-            <div className="sidebar-invite-row">
-              <select
-                value={inviteRole}
-                onChange={(e) => setInviteRole(e.target.value as "editor" | "viewer")}
-                className="sidebar-invite-select"
-              >
-                <option value="editor">editor</option>
-                <option value="viewer">viewer</option>
-              </select>
-              <button
-                type="submit"
-                className="sidebar-invite-btn"
-                disabled={inviting}
-              >
-                {inviting ? "..." : "Add"}
-              </button>
-            </div>
-            {inviteError && <p className="sidebar-invite-error">{inviteError}</p>}
-          </form>
-        )}
-      </div>
-    </aside>
-  )
+            {isOwner && (
+              <form className="sidebar-invite" onSubmit={handleInvite}>
+                <div className="sidebar-label" style={{ marginTop: "0.75rem" }}>Invite</div>
+                <input
+                  type="email"
+                  placeholder="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  className="sidebar-invite-input"
+                />
+                <div className="sidebar-invite-row">
+                  <select
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value as "editor" | "viewer")}
+                    className="sidebar-invite-select"
+                  >
+                    <option value="editor">editor</option>
+                    <option value="viewer">viewer</option>
+                  </select>
+                  <button
+                    type="submit"
+                    className="sidebar-invite-btn"
+                    disabled={inviting}
+                  >
+                    {inviting ? "..." : "Add"}
+                  </button>
+                </div>
+                {inviteError && <p className="sidebar-invite-error">{inviteError}</p>}
+              </form>
+            )}
+          </div>
+        </div>
+      </Panel>
+
+    </Group>
+  </aside>
+)
 }

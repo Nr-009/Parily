@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"parily.dev/app/internal/config"
@@ -67,4 +68,24 @@ func (c *Client) Ping(ctx context.Context) error {
 
 func (c *Client) Close() error {
 	return c.rdb.Close()
+}
+
+
+// SetNX sets key only if it doesn't exist. Returns true if lock was acquired.
+// EX sets auto-expiry in seconds as a dead man's switch.
+func (c *Client) SetNX(key string, value string, expirySeconds int) (bool, error) {
+	result, err := c.rdb.SetArgs(context.Background(), key, value, redis.SetArgs{
+		Mode: "NX",
+		TTL:  time.Duration(expirySeconds) * time.Second,
+	}).Result()
+	if err != nil && err != redis.Nil {
+		return false, fmt.Errorf("setnx: %w", err)
+	}
+	return result == "OK", nil
+}
+
+
+// Del deletes a key — used to release the execution lock.
+func (c *Client) Del(key string) error {
+	return c.rdb.Del(context.Background(), key).Err()
 }

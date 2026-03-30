@@ -1,14 +1,19 @@
 package rooms
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	"go.uber.org/zap"
 
+	"parily.dev/app/internal/kafka"
+	"parily.dev/app/internal/logger"
 	mongoRepo "parily.dev/app/internal/mongo"
 	pg "parily.dev/app/internal/postgres"
 )
@@ -275,6 +280,7 @@ func (h *Handler) SaveState(c *gin.Context) {
 	roomID := c.Param("roomID")
 	fileID := c.Param("fileID")
 	userID := c.GetString("userID")
+
 	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
 	if err == pgx.ErrNoRows {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
@@ -288,6 +294,7 @@ func (h *Handler) SaveState(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "viewers cannot save"})
 		return
 	}
+
 	existing, err := pg.GetFileByID(c.Request.Context(), h.db, fileID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
@@ -297,16 +304,41 @@ func (h *Handler) SaveState(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "folders do not have state"})
 		return
 	}
+
 	state, err := io.ReadAll(c.Request.Body)
 	if err != nil || len(state) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "empty state"})
 		return
 	}
+
 	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
-	if err := docRepo.SaveDocument(c.Request.Context(), fileID, state); err != nil {
+	version, err := docRepo.SaveDocument(c.Request.Context(), fileID, state)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save state"})
 		return
 	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		logger.Log.Info("publishing edit event to kafka",
+			zap.String("file_id", fileID),
+			zap.Int("version", version),
+		)
+		if err := h.kafka.PublishEditEvent(ctx, kafka.EditEvent{
+			RoomID:  roomID,
+			FileID:  fileID,
+			UserID:  userID,
+			YjsBlob: state,
+			Version: version,
+			SavedAt: time.Now().UTC(),
+		}); err != nil {
+			logger.Log.Error("failed to publish edit event", zap.Error(err))
+		} else {
+			logger.Log.Info("edit event published successfully", zap.String("file_id", fileID))
+		}
+	}()
+
 	c.JSON(http.StatusOK, gin.H{"message": "saved"})
 }
 
@@ -343,4 +375,43 @@ func (h *Handler) LoadState(c *gin.Context) {
 		return
 	}
 	c.Data(http.StatusOK, "application/octet-stream", doc.YjsState)
+}
+
+
+
+
+
+func (h *Handler) GetLastExecution(c *gin.Context) {
+	roomID := c.Param("roomID")
+	fileID := c.Param("fileID")
+	userID := c.GetString("userID")
+
+	_, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+
+	execRepo := mongoRepo.NewExecutionRepository(h.mongoDB)
+	result, err := execRepo.GetLastExecution(c.Request.Context(), fileID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch execution"})
+		return
+	}
+	if result == nil {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"output":      result.Output,
+		"exit_code":   result.ExitCode,
+		"duration_ms": result.DurationMs,
+		"truncated":   result.Truncated,
+		"executed_at": result.ExecutedAt,
+	})
 }

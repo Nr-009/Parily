@@ -45,6 +45,45 @@ services:
       timeout: 5s
       retries: 5
 
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: parily_kafka
+    restart: unless-stopped
+    ports:
+      - "${KAFKA_PORT}:9092"
+    environment:
+      # KRaft mode — no ZooKeeper needed
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 720        # 30 days
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: false # we create topics explicitly
+      CLUSTER_ID: "kOLkJIMhRqaooqzYDK7-yw"  # required for KRaft — fixed string
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s  # kafka takes longer to boot than other services
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: parily_kafka_init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    # runs once, creates topics, then exits
+    entrypoint: ["/bin/sh", "-c", "echo 'Creating Kafka topics...' && kafka-topics --create --bootstrap-server kafka:9092 --topic edit-events --partitions 1 --replication-factor 1 --config retention.ms=2592000000 && kafka-topics --create --bootstrap-server kafka:9092 --topic execution-events --partitions 1 --replication-factor 1 --config retention.ms=2592000000 && kafka-topics --create --bootstrap-server kafka:9092 --topic dead-letter --partitions 1 --replication-factor 1 --config retention.ms=7776000000 && echo 'Topics created.' && kafka-topics --list --bootstrap-server kafka:9092"]
+
   backend:
     build:
       context: ./backend
@@ -62,6 +101,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
 
   frontend:
     build:
@@ -76,6 +117,7 @@ services:
       - VITE_API_URL=http://localhost:${SERVER_PORT}
     depends_on:
       - backend
+
   executor:
     build:
       context: ./backend
@@ -94,7 +136,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   mongo_data:
   redis_data:
+  kafka_data:

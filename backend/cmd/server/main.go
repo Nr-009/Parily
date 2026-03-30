@@ -16,6 +16,7 @@ import (
 	"parily.dev/app/internal/auth"
 	"parily.dev/app/internal/config"
 	"parily.dev/app/internal/health"
+	"parily.dev/app/internal/kafka"
 	"parily.dev/app/internal/logger"
 	"parily.dev/app/internal/middleware"
 	mongoClient "parily.dev/app/internal/mongo"
@@ -62,6 +63,11 @@ func main() {
 	defer redisClient.Close()
 	logger.Log.Info("Redis connected")
 
+	kafkaProducer := kafka.NewProducer(cfg.KafkaBroker)
+	defer kafkaProducer.Close()
+	logger.Log.Info("Kafka producer connected", zap.String("broker", cfg.KafkaBroker))
+
+
 	dsn := fmt.Sprintf(
 		"postgres://%s:%s@%s:%s/%s?sslmode=disable",
 		cfg.PostgresUser,
@@ -104,7 +110,7 @@ func main() {
 	roomHandler := wshandler.NewRoomHandler(roomHub, pgPool, cfg, logger.Log, executorClient)
 	notifyHandler := wshandler.NewNotifyHandler(notifyHub, pgPool, cfg, logger.Log)
 	authHandler := auth.NewHandler(pgPool, cfg, logger.Log)
-	roomsHandler := rooms.NewHandler(pgPool, mongoDB, redisClient, notifyHub)
+	roomsHandler := rooms.NewHandler(pgPool, mongoDB, redisClient, notifyHub, kafkaProducer, cfg.KafkaBroker)
 
 	// ── Router ────────────────────────────────────────────────────────────────
 	r := gin.New()

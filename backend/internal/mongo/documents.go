@@ -57,23 +57,22 @@ func (r *DocumentRepository) LoadDocument(ctx context.Context, fileID string) (*
 }
 
 // SaveDocument upserts the Yjs state for a file and increments the version.
-func (r *DocumentRepository) SaveDocument(ctx context.Context, fileID string, state []byte) error {
-	filter := bson.M{"file_id": fileID}
-	update := bson.M{
-		"$set": bson.M{
-			"yjs_state":  state,
-			"updated_at": time.Now(),
-		},
-		"$inc": bson.M{"version": 1},
-	}
-	opts := options.Update().SetUpsert(true)
-	_, err := r.col.UpdateOne(ctx, filter, update, opts)
-	if err != nil {
-		return fmt.Errorf("save document: %w", err)
-	}
-	return nil
+func (r *DocumentRepository) SaveDocument(ctx context.Context, fileID string, state []byte) (int, error) {
+    filter := bson.M{"file_id": fileID}
+    update := bson.M{
+        "$set": bson.M{"yjs_state": state, "updated_at": time.Now()},
+        "$inc": bson.M{"version": 1},
+    }
+    // ReturnDocument After means we get the document state AFTER the increment
+    // so version reflects the new value not the old one
+    opts := options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)
+    var updated YjsDocument
+    err := r.col.FindOneAndUpdate(ctx, filter, update, opts).Decode(&updated)
+    if err != nil {
+        return 0, fmt.Errorf("save document: %w", err)
+    }
+    return updated.Version, nil
 }
-
 // DeleteDocument deletes the Yjs document for a single file.
 // Used when permanently deleting a file.
 func (r *DocumentRepository) DeleteDocument(ctx context.Context, fileID string) error {

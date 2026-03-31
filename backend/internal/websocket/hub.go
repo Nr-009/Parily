@@ -12,6 +12,7 @@ import (
 
 type Hub struct {
 	mu    sync.RWMutex
+	closed bool
 	rooms map[string]map[*websocket.Conn]bool
 	subs  map[string]*redis.Subscription
 	rdb   *redis.Client
@@ -31,10 +32,14 @@ func channelKey(roomID, fileID string) string {
 	return "room:" + roomID + ":file:" + fileID
 }
 
-func (h *Hub) Register(conn *websocket.Conn, roomID, fileID string) {
+func (h *Hub) Register(conn *websocket.Conn, roomID, fileID string) bool {
 	key := channelKey(roomID, fileID)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	if h.closed {
+        return false
+    }
 
 	if h.rooms[key] == nil {
 		h.rooms[key] = make(map[*websocket.Conn]bool)
@@ -44,6 +49,7 @@ func (h *Hub) Register(conn *websocket.Conn, roomID, fileID string) {
 	if h.subs[key] == nil {
 		h.subscribeRedis(key)
 	}
+	return true
 }
 
 func (h *Hub) Unregister(conn *websocket.Conn, roomID, fileID string) {
@@ -92,3 +98,36 @@ func (h *Hub) subscribeRedis(key string) {
 		}
 	}()
 }
+
+func (h *Hub) Shutdown() {
+    h.mu.Lock()
+    h.closed = true    // any Register() after this returns false immediately
+    var conns []*websocket.Conn
+    for _, room := range h.rooms {
+        for conn := range room {
+            conns = append(conns, conn)
+        }
+    }
+    var subs []*redis.Subscription
+    for _, sub := range h.subs {
+        subs = append(subs, sub)
+    }
+    h.rooms = make(map[string]map[*websocket.Conn]bool)
+    h.subs = make(map[string]*redis.Subscription)
+    h.mu.Unlock()
+
+    for _, sub := range subs {
+        sub.Close()
+    }
+    for _, conn := range conns {
+        conn.WriteMessage(
+            websocket.CloseMessage,
+            websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
+        )
+        conn.Close()
+        metrics.ActiveWebsocketConnections.Dec()
+    }
+    h.log.Info("Yjs hub shutdown complete")
+}
+
+

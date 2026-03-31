@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
@@ -39,9 +40,15 @@ func (h *NotifyHandler) ServeNotify(c *gin.Context) {
 	}
 
 	userID := claims.UserID
-	h.hub.Register(conn, userID)
+	if !h.hub.Register(conn, userID) {
+    	conn.WriteMessage(
+        	websocket.CloseMessage,
+        	websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
+    	)
+    	conn.Close()
+    	return
+	}
 	defer h.hub.Unregister(conn, userID)
-
 	h.log.Info("notify ws connected", zap.String("user", userID))
 
 	// keep connection alive — read and discard any incoming messages

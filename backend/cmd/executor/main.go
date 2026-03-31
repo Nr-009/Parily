@@ -9,6 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/docker/docker/api/types/image"
@@ -44,6 +47,12 @@ type executorServer struct {
 	dockerCli *dockerclient.Client
 	rdb       *redis.Client
 	kafka     *kafka.Producer
+
+	// wg tracks in-flight runExecution goroutines.
+	// Nobody waits on this during normal operation — it is only
+	// blocked on during shutdown to ensure we never close Redis,
+	// Kafka, or Postgres while a goroutine is still writing to them.
+	wg sync.WaitGroup
 }
 
 func lockKey(roomID, fileID string) string {
@@ -58,7 +67,6 @@ func (s *executorServer) Execute(ctx context.Context, req *pb.ExecuteRequest) (*
 	log.Printf("Execute called: execution_id=%s room_id=%s file_id=%s",
 		req.ExecutionId, req.RoomId, req.FileId)
 
-	// try to acquire lock — 30s TTL matches execution timeout
 	acquired, err := s.rdb.SetNX(lockKey(req.RoomId, req.FileId), "1", 30)
 	if err != nil {
 		return nil, fmt.Errorf("lock check failed: %w", err)
@@ -70,19 +78,26 @@ func (s *executorServer) Execute(ctx context.Context, req *pb.ExecuteRequest) (*
 
 	log.Printf("[main] lock acquired for room=%s file=%s", req.RoomId, req.FileId)
 
-	// pass ctx so the goroutine continues the same trace started in the WS server
-	// the otelgrpc interceptor already injected the trace ID into this ctx
 	spanCtx := oteltrace.SpanFromContext(ctx).SpanContext()
 	execCtx := oteltrace.ContextWithSpanContext(context.Background(), spanCtx)
+
+	// wg.Add(1) BEFORE launching the goroutine — if we did it inside
+	// the goroutine there would be a race where shutdown calls wg.Wait()
+	// before the goroutine even registers itself.
+	s.wg.Add(1)
 	go s.runExecution(execCtx, req.RoomId, req.FileId, req.ExecutionId)
+
 	return &pb.ExecuteResponse{}, nil
 }
 
 func (s *executorServer) runExecution(ctx context.Context, roomID, fileID, executionID string) {
+	// wg.Done() signals shutdown that this goroutine has finished.
+	// During normal operation nobody is waiting on wg — this is free.
+	// Only during shutdown does wg.Wait() block until this returns.
+	defer s.wg.Done()
+
 	log.Printf("[main] starting execution room=%s file=%s", roomID, fileID)
 
-	// start a span that continues the trace from the WS server
-	// this span will appear as a child of handleRunFile in Jaeger
 	tracer := otel.Tracer("pairly")
 	ctx, span := tracer.Start(ctx, "runExecution",
 		oteltrace.WithAttributes(
@@ -94,14 +109,12 @@ func (s *executorServer) runExecution(ctx context.Context, roomID, fileID, execu
 	defer span.End()
 
 	defer func() {
-		// always release lock after publishing done
 		if err := s.rdb.Del(lockKey(roomID, fileID)); err != nil {
 			log.Printf("[main] failed to delete lock: %v", err)
 		}
 		log.Printf("[main] lock released room=%s file=%s", roomID, fileID)
 	}()
 
-	// reconstruct file tree — ctx carries the trace so child spans attach correctly
 	tempDir, entryPath, language, err := executor.ReconstructFileTree(ctx, s.db, s.mongoDB, roomID, executionID, fileID)
 	if err != nil {
 		log.Printf("[main] failed to reconstruct file tree: %v", err)
@@ -112,7 +125,6 @@ func (s *executorServer) runExecution(ctx context.Context, roomID, fileID, execu
 	}
 	defer os.RemoveAll(tempDir)
 
-	// run container — ctx carries the trace
 	result, err := executor.RunContainer(ctx, s.dockerCli, tempDir, entryPath, language)
 	if err != nil {
 		log.Printf("[main] failed to run container: %v", err)
@@ -126,14 +138,12 @@ func (s *executorServer) runExecution(ctx context.Context, roomID, fileID, execu
 	metrics.ExecutionsTotal.WithLabelValues(language).Inc()
 	metrics.ExecutionDuration.Observe(float64(result.DurationMs) / 1000)
 
-	// add execution result as span attributes for easy filtering in Jaeger
 	span.SetAttributes(
 		attribute.String("language", language),
 		attribute.Int("exit.code", result.ExitCode),
 		attribute.Int64("duration.ms", result.DurationMs),
 	)
 
-	// publish execution_done to Redis — RoomHub delivers to all clients
 	event := map[string]any{
 		"type":        "execution_done",
 		"file_id":     fileID,
@@ -150,7 +160,6 @@ func (s *executorServer) runExecution(ctx context.Context, roomID, fileID, execu
 	}
 	log.Printf("[main] published execution_done to %s", roomChannel(roomID))
 
-	// save to MongoDB
 	execRepo := mongoRepo.NewExecutionRepository(s.mongoDB)
 	if err := execRepo.SaveExecution(ctx, mongoRepo.ExecutionResult{
 		ExecutionID: executionID,
@@ -165,7 +174,6 @@ func (s *executorServer) runExecution(ctx context.Context, roomID, fileID, execu
 		log.Printf("[main] failed to save execution: %v", err)
 	}
 
-	// publish to Kafka async — audit log, nobody is waiting on this
 	go func() {
 		kctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -202,6 +210,10 @@ func (s *executorServer) publishError(roomID, fileID, reason string) {
 	}
 }
 
+// pullImages takes the signal context so SIGTERM during startup aborts
+// immediately. Safe because the gRPC server has not started yet —
+// no connections exist, no work is in progress.
+// On subsequent restarts Docker serves from host cache so this is instant.
 func pullImages(ctx context.Context, cli *dockerclient.Client) {
 	images := []string{
 		"python:3.11-alpine",
@@ -210,9 +222,21 @@ func pullImages(ctx context.Context, cli *dockerclient.Client) {
 		"eclipse-temurin:21-alpine",
 	}
 	for _, img := range images {
+		// check signal before each pull — fast exit if SIGTERM already arrived
+		select {
+		case <-ctx.Done():
+			log.Println("[startup] shutdown signal received — aborting image pull")
+			return
+		default:
+		}
+
 		log.Printf("[startup] pulling image %s...", img)
 		reader, err := cli.ImagePull(ctx, img, image.PullOptions{})
 		if err != nil {
+			if ctx.Err() != nil {
+				log.Println("[startup] shutdown signal received during pull — aborting")
+				return
+			}
 			log.Printf("[startup] failed to pull %s: %v", img, err)
 			continue
 		}
@@ -230,11 +254,12 @@ func main() {
 
 	metrics.InitExecutor()
 
-	shutdown, err := tracing.Init("pairly-executor", cfg.JaegerEndpoint)
+	// OTel deferred first so it runs last — flushes spans from shutdown itself.
+	tracingShutdown, err := tracing.Init("pairly-executor", cfg.JaegerEndpoint)
 	if err != nil {
 		log.Fatalf("failed to init tracing: %v", err)
 	}
-	defer shutdown()
+	defer tracingShutdown()
 
 	pgPool, err := pg.Connect(cfg)
 	if err != nil {
@@ -248,6 +273,7 @@ func main() {
 		log.Fatalf("failed to connect to mongodb: %v", err)
 	}
 	log.Println("mongodb connected")
+	defer mongoDB.Client().Disconnect(context.Background())
 
 	redisClient, err := redis.Connect(cfg)
 	if err != nil {
@@ -267,18 +293,29 @@ func main() {
 	defer cli.Close()
 	log.Println("docker client connected")
 
-	// start a small HTTP server just for Prometheus scraping
-	// port from config matches what prometheus.yml expects for the executor target
+	// Signal context — passed to pullImages so startup aborts on SIGTERM.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	// Metrics HTTP server with its own shutdown path.
+	metricsSrv := &http.Server{
+		Addr:    ":" + cfg.MetricsPort,
+		Handler: promhttp.Handler(),
+	}
 	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", promhttp.Handler())
 		log.Printf("executor metrics server listening on :%s", cfg.MetricsPort)
-		if err := http.ListenAndServe(":"+cfg.MetricsPort, mux); err != nil {
+		if err := metricsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("[main] metrics server error: %v", err)
 		}
 	}()
 
-	pullImages(context.Background(), cli)
+	// pullImages respects ctx — if SIGTERM arrives mid-pull we exit here
+	// before the gRPC server ever starts. No connections, no work, clean exit.
+	pullImages(ctx, cli)
+	if ctx.Err() != nil {
+		log.Println("shutdown signal received before gRPC server started — exiting")
+		return
+	}
 	log.Println("all images ready")
 
 	lis, err := net.Listen("tcp", ":50051")
@@ -286,19 +323,61 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	s := grpc.NewServer(
-		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-	)
-	pb.RegisterExecutorServiceServer(s, &executorServer{
+	srv := &executorServer{
 		db:        pgPool,
 		mongoDB:   mongoDB,
 		dockerCli: cli,
 		rdb:       redisClient,
 		kafka:     kafkaProducer,
-	})
-
-	log.Println("executor gRPC server listening on :50051")
-	if err := s.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %v", err)
 	}
+
+	grpcServer := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+	)
+	pb.RegisterExecutorServiceServer(grpcServer, srv)
+
+	go func() {
+		log.Println("executor gRPC server listening on :50051")
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Printf("[main] gRPC server stopped: %v", err)
+		}
+	}()
+
+	// Block until SIGTERM or SIGINT.
+	<-ctx.Done()
+	log.Println("shutdown signal received")
+
+	// ── Graceful shutdown sequence ────────────────────────────────────────────
+	// 1. GracefulStop — stops accepting new Execute() RPCs. Execute() returns
+	//    immediately after lock acquired so in-flight RPCs drain near-instantly.
+	// 2. wg.Wait() 30s timeout — waits for runExecution goroutines to finish.
+	//    30s matches Redis lock TTL exactly. After 30s the lock expires anyway
+	//    so forcing through is safe — no double execution possible.
+	// 3. Metrics server shutdown — not critical, short timeout.
+	// 4. Everything else via defers: pgPool, Redis, Kafka, Docker, OTel.
+
+	log.Println("stopping gRPC server...")
+	grpcServer.GracefulStop()
+	log.Println("gRPC server stopped")
+
+	waitCh := make(chan struct{})
+	go func() {
+		srv.wg.Wait()
+		close(waitCh)
+	}()
+
+	select {
+	case <-waitCh:
+		log.Println("all in-flight executions finished")
+	case <-time.After(30 * time.Second):
+		log.Println("shutdown timeout — proceeding with executions still running")
+	}
+
+	metricsCtx, metricsCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer metricsCancel()
+	if err := metricsSrv.Shutdown(metricsCtx); err != nil {
+		log.Printf("[main] metrics server shutdown error: %v", err)
+	}
+
+	log.Println("executor shutdown complete")
 }

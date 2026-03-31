@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
@@ -78,8 +79,15 @@ func (h *RoomHandler) ServeRoom(c *gin.Context) {
 		return
 	}
 
-	h.hub.Register(conn, roomID)
-	defer h.hub.Unregister(conn, roomID)
+	if !h.hub.Register(conn, roomID) {
+    conn.WriteMessage(
+        websocket.CloseMessage,
+        websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
+    )
+    conn.Close()
+    return
+}
+defer h.hub.Unregister(conn, roomID)
 
 	h.log.Info("room ws connected",
 		zap.String("room", roomID),

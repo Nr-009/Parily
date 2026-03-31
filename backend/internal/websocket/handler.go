@@ -55,7 +55,14 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		return
 	}
 
-	h.hub.Register(conn, roomID, fileID)
+	if !h.hub.Register(conn, roomID, fileID) {
+    	conn.WriteMessage(
+        	websocket.CloseMessage,
+       		websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
+    	)
+    	conn.Close()
+    	return
+	}
 	defer h.hub.Unregister(conn, roomID, fileID)
 
 	h.log.Info("ws client connected",

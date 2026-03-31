@@ -16,6 +16,7 @@ import (
 // to all connections that user has open (e.g. multiple tabs on dashboard).
 type NotifyHub struct {
 	mu    sync.RWMutex
+	closed bool  
 	users map[string]map[*websocket.Conn]bool
 	subs  map[string]*redis.Subscription
 	rdb   *redis.Client
@@ -35,9 +36,12 @@ func notifyChannel(userID string) string {
 	return "user:" + userID + ":notify"
 }
 
-func (h *NotifyHub) Register(conn *websocket.Conn, userID string) {
+func (h *NotifyHub) Register(conn *websocket.Conn, userID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+        return false
+    }
 
 	if h.users[userID] == nil {
 		h.users[userID] = make(map[*websocket.Conn]bool)
@@ -47,6 +51,7 @@ func (h *NotifyHub) Register(conn *websocket.Conn, userID string) {
 	if h.subs[userID] == nil {
 		h.subscribeRedis(userID)
 	}
+	return true 
 }
 
 func (h *NotifyHub) Unregister(conn *websocket.Conn, userID string) {
@@ -93,4 +98,34 @@ func (h *NotifyHub) subscribeRedis(userID string) {
 			}
 		}
 	}()
+}
+
+func (h *NotifyHub) Shutdown() {
+    h.mu.Lock()
+    h.closed = true
+    var conns []*websocket.Conn
+    for _, userConns := range h.users {
+        for conn := range userConns {
+            conns = append(conns, conn)
+        }
+    }
+    var subs []*redis.Subscription
+    for _, sub := range h.subs {
+        subs = append(subs, sub)
+    }
+    h.users = make(map[string]map[*websocket.Conn]bool)
+    h.subs = make(map[string]*redis.Subscription)
+    h.mu.Unlock()
+
+    for _, sub := range subs {
+        sub.Close()
+    }
+    for _, conn := range conns {
+        conn.WriteMessage(
+            websocket.CloseMessage,
+            websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
+        )
+        conn.Close()
+    }
+    h.log.Info("NotifyHub shutdown complete")
 }

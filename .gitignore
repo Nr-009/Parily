@@ -24,5 +24,12 @@ dist-ssr
 *.sw?
 .env
 
+#kuebernetes
 secrets.yaml
 k8s/secrets.yaml
+
+#terraform
+terraform/terraform.tfvars
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup

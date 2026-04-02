@@ -32,7 +32,6 @@ import (
 	executor "parily.dev/app/internal/executor"
 	"parily.dev/app/internal/kafka"
 	"parily.dev/app/internal/metrics"
-	mongoClient "parily.dev/app/internal/mongo"
 	mongoRepo "parily.dev/app/internal/mongo"
 	pg "parily.dev/app/internal/postgres"
 	"parily.dev/app/internal/redis"
@@ -268,7 +267,7 @@ func main() {
 	defer pgPool.Close()
 	log.Println("postgres connected")
 
-	mongoDB, err := mongoClient.Connect(cfg)
+	mongoDB, err := mongoRepo.Connect(cfg)
 	if err != nil {
 		log.Fatalf("failed to connect to mongodb: %v", err)
 	}
@@ -346,15 +345,6 @@ func main() {
 	// Block until SIGTERM or SIGINT.
 	<-ctx.Done()
 	log.Println("shutdown signal received")
-
-	// ── Graceful shutdown sequence ────────────────────────────────────────────
-	// 1. GracefulStop — stops accepting new Execute() RPCs. Execute() returns
-	//    immediately after lock acquired so in-flight RPCs drain near-instantly.
-	// 2. wg.Wait() 30s timeout — waits for runExecution goroutines to finish.
-	//    30s matches Redis lock TTL exactly. After 30s the lock expires anyway
-	//    so forcing through is safe — no double execution possible.
-	// 3. Metrics server shutdown — not critical, short timeout.
-	// 4. Everything else via defers: pgPool, Redis, Kafka, Docker, OTel.
 
 	log.Println("stopping gRPC server...")
 	grpcServer.GracefulStop()

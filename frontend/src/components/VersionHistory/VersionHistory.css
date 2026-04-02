@@ -1,0 +1,239 @@
+/* overlay — full screen dim, click outside closes panel */
+.vh-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+
+/* panel — slides in from right */
+.vh-panel {
+  position: relative;
+  width: 820px;
+  height: 100vh;
+  background: #1e1e1e;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.5);
+}
+
+/* header */
+.vh-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+
+.vh-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+  letter-spacing: 0.3px;
+}
+
+.vh-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.vh-close:hover {
+  color: #fff;
+  background: #333;
+}
+
+/* body — list + preview side by side */
+.vh-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* left — version list */
+.vh-list {
+  width: 220px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid #333;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vh-hint {
+  color: #666;
+  font-size: 12px;
+  padding: 8px;
+}
+.vh-hint--center {
+  text-align: center;
+  margin-top: 40px;
+}
+
+/* version card */
+.vh-card {
+  background: #2a2a2a;
+  border: 1px solid #383838;
+  border-radius: 6px;
+  padding: 10px 10px 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.vh-card:hover {
+  border-color: #555;
+  background: #313131;
+}
+.vh-card--active {
+  border-color: #4a9eff;
+  background: #1a2d45;
+}
+
+.vh-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.vh-card-version {
+  font-size: 13px;
+  font-weight: 600;
+  color: #d0d0d0;
+}
+
+.vh-card-date {
+  font-size: 11px;
+  color: #888;
+}
+
+.vh-card-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.vh-card-user {
+  font-size: 11px;
+  color: #666;
+  font-family: monospace;
+}
+
+/* restore button on each card */
+
+.vh-restore-btn:hover {
+  background: #3a5f3a;
+  color: #88d088;
+}
+
+/* right — Monaco preview */
+.vh-preview {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* confirmation modal inside the panel */
+
+
+.vh-confirm p {
+  color: #e0e0e0;
+  font-size: 14px;
+  margin: 0 0 6px;
+}
+
+
+
+.vh-confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.vh-confirm-cancel {
+  padding: 7px 18px;
+  background: #333;
+  color: #bbb;
+  border: 1px solid #444;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.vh-confirm-cancel:hover:not(:disabled) {
+  background: #3d3d3d;
+}
+
+.vh-confirm-ok {
+  padding: 7px 18px;
+  background: #1a4a8a;
+  color: #fff;
+  border: 1px solid #2a5a9a;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.vh-confirm-ok:hover:not(:disabled) {
+  background: #1e5aa0;
+}
+.vh-confirm-ok:disabled,
+.vh-confirm-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+
+/* preview toolbar — version label + copy button */
+.vh-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+  background: #1e1e1e;
+}
+
+.vh-preview-label {
+  font-size: 12px;
+  color: #888;
+}
+
+.vh-copy-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  background: #2a3a4a;
+  color: #6ab0e0;
+  border: 1px solid #3a5a7a;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.vh-copy-btn:hover {
+  background: #354a5e;
+  color: #88c8f0;
+}
+
+/* preview editor needs to fill remaining height */
+.vh-preview-editor {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* update preview to be a column when content is selected */
+.vh-preview {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}

@@ -42,12 +42,12 @@ func IssueToken(c *gin.Context, userID, email, secret string, expiryHours int) e
 		return fmt.Errorf("sign token: %w", err)
 	}
 	http.SetCookie(c.Writer, &http.Cookie{
-		Name:     cookieName,
-		Value:    signed,
-		Expires:  expiry,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
+    Name:     cookieName,
+    Value:    signed,
+    Expires:  expiry,
+    Path:     "/",
+    HttpOnly: true,
+    SameSite: http.SameSiteLaxMode,
 	})
 	return nil
 }

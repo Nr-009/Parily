@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pairly-config
+  namespace: pairly
+data:
+  # Server
+  SERVER_PORT: "8080"
+  ENVIRONMENT: "production"
+
+  # PostgreSQL — parily matches .env exactly
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "parily"
+  POSTGRES_DB: "parily"
+  POSTGRES_MAX_CONNS: "20"
+
+  # MongoDB
+  MONGO_URI: "mongodb://mongodb:27017"
+  MONGO_DB: "parily"
+  MONGO_PORT: "27017"
+
+  # Redis
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  REDIS_PASSWORD: ""
+
+  # Kafka — full Kubernetes DNS name
+  KAFKA_BROKER: "kafka-0.kafka.pairly.svc.cluster.local:9092"
+  KAFKA_PORT: "9092"
+
+  # Executor
+  EXECUTOR_PORT: "8081"
+  EXECUTOR_URL: "http://executor:8081"
+
+  # gRPC
+  GRPC_PORT: "50051"
+
+  # Observability
+  METRICS_PORT: "2112"
+  JAEGER_ENDPOINT: "jaeger:4317"
+  PROMETHEUS_PORT: "9090"
+  GRAFANA_PORT: "3000"
+  JAEGER_UI_PORT: "16686"
+  JAEGER_OTLP_GRPC_PORT: "4317"
+  JAEGER_OTLP_HTTP_PORT: "4318"
+
+  # Google OAuth
+  GOOGLE_REDIRECT_URL: "http://localhost:8080/auth/callback"
+  # JWT
+  JWT_EXPIRY_HOURS: "24"
+
+  # Frontend
+  FRONTEND_PORT: "5173"
+  VITE_WS_URL: "ws://localhost:8080"
+  VITE_API_URL: "http://localhost:8080"

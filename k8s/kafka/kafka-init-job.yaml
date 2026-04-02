@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init
+  namespace: pairly
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-kafka
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z kafka-0.kafka 9092; do
+                echo "waiting for kafka..."
+                sleep 5
+              done
+              echo "kafka is ready"
+      containers:
+        - name: kafka-init
+          image: confluentinc/cp-kafka:7.6.0
+          command:
+            - sh
+            - -c
+            - |
+              echo "Creating Kafka topics..."
+              kafka-topics --create --if-not-exists \
+                --bootstrap-server kafka-0.kafka:9092 \
+                --topic edit-events \
+                --partitions 1 \
+                --replication-factor 1 \
+                --config retention.ms=2592000000
+
+              kafka-topics --create --if-not-exists \
+                --bootstrap-server kafka-0.kafka:9092 \
+                --topic execution-events \
+                --partitions 1 \
+                --replication-factor 1 \
+                --config retention.ms=2592000000
+
+              kafka-topics --create --if-not-exists \
+                --bootstrap-server kafka-0.kafka:9092 \
+                --topic dead-letter \
+                --partitions 1 \
+                --replication-factor 1 \
+                --config retention.ms=7776000000
+
+              echo "Topics created:"
+              kafka-topics --list --bootstrap-server kafka-0.kafka:9092

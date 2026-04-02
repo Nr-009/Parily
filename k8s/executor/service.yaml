@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: executor
+  namespace: pairly
+spec:
+  # ClusterIP — executor is internal only, never exposed outside the cluster.
+  # websocket-server connects to "executor:50051" and Kubernetes DNS
+  # resolves it to this service, which load balances across executor pods.
+  type: ClusterIP
+  selector:
+    app: executor
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+    - name: metrics
+      port: 2112
+      targetPort: 2112

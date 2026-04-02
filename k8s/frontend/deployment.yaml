@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: pairly
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      initContainers:
+        # Wait for websocket-server to be ready before starting frontend.
+        # No point serving the UI if the API is not up.
+        - name: wait-for-backend
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z websocket-server 8080; do
+                echo "waiting for backend..."
+                sleep 3
+              done
+              echo "backend ready"
+      containers:
+        - name: frontend
+          image: nrubiano01/pairly-frontend:latest
+          ports:
+            - containerPort: 5173
+          env:
+            # 127.0.0.1 is the minikube tunnel external IP.
+            # The browser runs on your Mac so it needs an externally
+            # reachable address — internal service names won't work.
+            - name: VITE_API_URL
+              value: "http://localhost:8080"
+            - name: VITE_WS_URL
+              value: "ws://localhost:8080"
+          readinessProbe:
+            tcpSocket:
+              port: 5173
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: 5173
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3

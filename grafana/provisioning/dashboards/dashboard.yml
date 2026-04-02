@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: 'pairly'
+    folder: 'Pairly'
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards

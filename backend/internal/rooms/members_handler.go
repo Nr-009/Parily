@@ -49,6 +49,18 @@ func (h *Handler) AddMember(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not add member"})
 		return
 	}
+	// get room name for the notification
+	var roomNameForNotify string
+	_ = h.db.QueryRow(c.Request.Context(), `SELECT name FROM rooms WHERE id = $1`, roomID).Scan(&roomNameForNotify)
+
+	// notify the invited user so their dashboard updates instantly
+	h.publishNotification(target.ID, map[string]any{
+		"type":      "room_invited",
+		"room_id":   roomID,
+		"room_name": roomNameForNotify,
+		"role":      req.Role,
+	})
+
 	c.JSON(http.StatusOK, gin.H{
 		"message": "member added",
 		"user":    gin.H{"id": target.ID, "email": target.Email, "name": target.Name},

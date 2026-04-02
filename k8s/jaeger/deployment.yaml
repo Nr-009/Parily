@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: pairly
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      # Init container pre-creates badger directories and sets ownership
+      # to uid 10001 — same as Docker Compose jaeger-init.
+      # Jaeger image is distroless so we use alpine for this, same pattern.
+      initContainers:
+        - name: jaeger-init
+          image: alpine:3.19
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /badger/data /badger/key
+              chown -R 10001:10001 /badger
+          volumeMounts:
+            - name: jaeger-data
+              mountPath: /badger
+      containers:
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.56
+          ports:
+            - containerPort: 16686  # UI
+            - containerPort: 4317   # OTLP gRPC
+            - containerPort: 4318   # OTLP HTTP
+          env:
+            - name: SPAN_STORAGE_TYPE
+              value: "badger"
+            - name: BADGER_EPHEMERAL
+              value: "false"
+            - name: BADGER_DIRECTORY_VALUE
+              value: "/badger/data"
+            - name: BADGER_DIRECTORY_KEY
+              value: "/badger/key"
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+          volumeMounts:
+            - name: jaeger-data
+              mountPath: /badger
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 16686
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 16686
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: jaeger-data
+          persistentVolumeClaim:
+            claimName: jaeger-data

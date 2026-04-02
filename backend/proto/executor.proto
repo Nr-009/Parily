@@ -1,0 +1,26 @@
+syntax = "proto3";
+package executor;
+option go_package = "./proto";
+
+service ExecutorService {
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  rpc ExecuteStream(ExecuteRequest) returns (stream Line);
+}
+
+message ExecuteRequest {
+  string execution_id = 1;
+  string room_id      = 2;
+  string file_id      = 3;
+}
+
+message ExecuteResponse {
+  string output       = 1;
+  int32  exit_code    = 2;
+  int64  duration_ms  = 3;
+  bool   truncated    = 4;
+}
+
+message Line {
+  string content   = 1;
+  bool   is_stderr = 2;
+}

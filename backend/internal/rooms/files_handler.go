@@ -1,17 +1,37 @@
 package rooms
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
+	ycrdt "github.com/skyterra/y-crdt"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 
+	"parily.dev/app/internal/kafka"
+	"parily.dev/app/internal/logger"
+	"parily.dev/app/internal/metrics"
 	mongoRepo "parily.dev/app/internal/mongo"
 	pg "parily.dev/app/internal/postgres"
 )
+
+
+func yjsBlobToText(blob []byte) string {
+	doc := ycrdt.NewDoc("dedup", false, nil, nil, false)
+	doc.Transact(func(trans *ycrdt.Transaction) {
+		ycrdt.ApplyUpdate(doc, blob, nil)
+	}, nil)
+	return doc.GetText("content").ToString()
+}
 
 func (h *Handler) GetFiles(c *gin.Context) {
 	roomID := c.Param("roomID")
@@ -225,8 +245,6 @@ func (h *Handler) ToggleFile(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"file": fileResponse(updated)})
 }
 
-// PermanentDeleteFile hard deletes a file or folder and all its descendants.
-// Deletes MongoDB documents for all file descendants first, then hard DELETEs from DB.
 func (h *Handler) PermanentDeleteFile(c *gin.Context) {
 	roomID := c.Param("roomID")
 	fileID := c.Param("fileID")
@@ -247,21 +265,19 @@ func (h *Handler) PermanentDeleteFile(c *gin.Context) {
 		return
 	}
 
-	// get all file (non-folder) descendant IDs to clean up MongoDB
 	fileIDs, err := pg.GetFileDescendantIDs(c.Request.Context(), h.db, fileID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not resolve descendants"})
 		return
 	}
 
-	// delete MongoDB documents for all file descendants
 	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
+	snapRepo := mongoRepo.NewSnapshotRepository(h.mongoDB)
 	for _, id := range fileIDs {
-		// best effort — don't fail if doc doesn't exist
 		_ = docRepo.DeleteDocument(c.Request.Context(), id)
+		_ = snapRepo.DeleteSnapshotsByFile(c.Request.Context(), id)
 	}
 
-	// hard delete from DB (recursive CTE deletes entire subtree)
 	if err := pg.PermanentDeleteFile(c.Request.Context(), h.db, fileID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not permanently delete"})
 		return
@@ -275,12 +291,26 @@ func (h *Handler) SaveState(c *gin.Context) {
 	roomID := c.Param("roomID")
 	fileID := c.Param("fileID")
 	userID := c.GetString("userID")
-	role, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
+
+	// start span early so all operations inside are children
+	tracer := otel.Tracer("pairly")
+	ctx, span := tracer.Start(c.Request.Context(), "SaveState",
+		oteltrace.WithAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("file.id", fileID),
+			attribute.String("user.id", userID),
+		),
+	)
+	defer span.End()
+
+	role, err := pg.GetMemberRole(ctx, h.db, roomID, userID)
 	if err == pgx.ErrNoRows {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
 		return
 	}
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
@@ -288,8 +318,11 @@ func (h *Handler) SaveState(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "viewers cannot save"})
 		return
 	}
-	existing, err := pg.GetFileByID(c.Request.Context(), h.db, fileID)
+
+	existing, err := pg.GetFileByID(ctx, h.db, fileID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
 	}
@@ -297,16 +330,83 @@ func (h *Handler) SaveState(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "folders do not have state"})
 		return
 	}
+
 	state, err := io.ReadAll(c.Request.Body)
 	if err != nil || len(state) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "empty state"})
 		return
 	}
+
+	incomingText := yjsBlobToText(state)
+
+	snapRepo := mongoRepo.NewSnapshotRepository(h.mongoDB)
+	latest, err := snapRepo.GetLatestSnapshot(ctx, fileID)
+	if err == nil && latest != nil && latest.Text == incomingText {
+    	metrics.YjsSavesSkippedTotal.Inc()
+    	span.SetAttributes(attribute.Bool("save.skipped", true))
+    	logger.Log.Info("skipping save — content unchanged", zap.String("file_id", fileID))
+    	c.JSON(http.StatusOK, gin.H{"message": "saved"})
+    	return
+	}
+
 	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
-	if err := docRepo.SaveDocument(c.Request.Context(), fileID, state); err != nil {
+	version, err := docRepo.SaveDocument(ctx, fileID, state)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not save state"})
 		return
 	}
+	metrics.YjsSavesTotal.Inc()
+	span.SetAttributes(
+		attribute.Bool("save.skipped", false),
+		attribute.Int("version", version),
+	)
+
+	capturedText := incomingText
+	capturedVersion := version
+
+	go func() {
+		gctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		logger.Log.Info("publishing edit event to kafka",
+			zap.String("file_id", fileID),
+			zap.Int("version", capturedVersion),
+		)
+		if err := h.kafka.PublishEditEvent(gctx, kafka.EditEvent{
+			RoomID:  roomID,
+			FileID:  fileID,
+			UserID:  userID,
+			YjsBlob: state,
+			Version: capturedVersion,
+			SavedAt: time.Now().UTC(),
+		}); err != nil {
+			logger.Log.Error("failed to publish edit event", zap.Error(err))
+			_ = h.kafka.PublishDeadLetter(gctx, "edit-events", state, err.Error())
+			metrics.KafkaPublishErrorsTotal.WithLabelValues("edit-events").Inc()
+		} else {
+			logger.Log.Info("edit event published successfully", zap.String("file_id", fileID))
+		}
+	}()
+
+	go func() {
+		gctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		snapRepo := mongoRepo.NewSnapshotRepository(h.mongoDB)
+		if err := snapRepo.SaveSnapshot(gctx, fileID, roomID, capturedVersion, capturedText); err != nil {
+			logger.Log.Error("failed to save snapshot",
+				zap.String("file_id", fileID),
+				zap.Int("version", capturedVersion),
+				zap.Error(err),
+			)
+		} else {
+			logger.Log.Info("snapshot saved",
+				zap.String("file_id", fileID),
+				zap.Int("version", capturedVersion),
+			)
+		}
+	}()
+
 	c.JSON(http.StatusOK, gin.H{"message": "saved"})
 }
 
@@ -314,17 +414,33 @@ func (h *Handler) LoadState(c *gin.Context) {
 	roomID := c.Param("roomID")
 	fileID := c.Param("fileID")
 	userID := c.GetString("userID")
-	_, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
+
+	tracer := otel.Tracer("pairly")
+	ctx, span := tracer.Start(c.Request.Context(), "LoadState",
+		oteltrace.WithAttributes(
+			attribute.String("room.id", roomID),
+			attribute.String("file.id", fileID),
+			attribute.String("user.id", userID),
+		),
+	)
+	defer span.End()
+
+	_, err := pg.GetMemberRole(ctx, h.db, roomID, userID)
 	if err == pgx.ErrNoRows {
 		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
 		return
 	}
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
-	existing, err := pg.GetFileByID(c.Request.Context(), h.db, fileID)
+
+	existing, err := pg.GetFileByID(ctx, h.db, fileID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 		return
 	}
@@ -332,15 +448,60 @@ func (h *Handler) LoadState(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "folders do not have state"})
 		return
 	}
+
 	docRepo := mongoRepo.NewDocumentRepository(h.mongoDB)
-	doc, err := docRepo.LoadDocument(c.Request.Context(), fileID)
+	doc, err := docRepo.LoadDocument(ctx, fileID)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load state"})
 		return
 	}
 	if doc == nil || len(doc.YjsState) == 0 {
+		span.SetAttributes(attribute.Bool("state.empty", true))
 		c.Status(http.StatusNoContent)
 		return
 	}
+
+	span.SetAttributes(
+		attribute.Bool("state.empty", false),
+		attribute.Int("state.size_bytes", len(doc.YjsState)),
+		attribute.Int("version", doc.Version),
+	)
 	c.Data(http.StatusOK, "application/octet-stream", doc.YjsState)
+}
+
+func (h *Handler) GetLastExecution(c *gin.Context) {
+	roomID := c.Param("roomID")
+	fileID := c.Param("fileID")
+	userID := c.GetString("userID")
+
+	_, err := pg.GetMemberRole(c.Request.Context(), h.db, roomID, userID)
+	if err == pgx.ErrNoRows {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
+	}
+
+	execRepo := mongoRepo.NewExecutionRepository(h.mongoDB)
+	result, err := execRepo.GetLastExecution(c.Request.Context(), fileID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not fetch execution"})
+		return
+	}
+	if result == nil {
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"output":      result.Output,
+		"exit_code":   result.ExitCode,
+		"duration_ms": result.DurationMs,
+		"truncated":   result.Truncated,
+		"executed_at": result.ExecutedAt,
+	})
 }

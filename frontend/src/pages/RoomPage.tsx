@@ -2,8 +2,12 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import { useParams, useNavigate } from "react-router-dom"
 import { useAuth, apiFetch } from "../context/AuthContext"
 import { useRoomSocket, getUserColor } from "../hooks/useRoomSocket"
+import type { ExecutionResult } from "../hooks/useRoomSocket"
 import { Sidebar } from "../components/Sidebar/sidebar"
 import { Editor } from "../components/Editor/Editor"
+import { OutputPanel } from "../components/OutputPanel/OutputPanel"
+import VersionHistory from "../components/VersionHistory/VersionHistory"
+import { Group, Panel, Separator } from "react-resizable-panels"
 import "./room.css"
 
 export interface File {
@@ -21,29 +25,33 @@ interface Member {
   role:    string
 }
 
+type RunState = "idle" | "executing" | "done-ok" | "done-err"
+
+const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8080"
+
 export default function RoomPage() {
   const { roomId }                     = useParams<{ roomId: string }>()
   const { user, loading: authLoading } = useAuth()
   const navigate                       = useNavigate()
 
-  const [role, setRole]             = useState<string | null>(null)
-  const [roomName, setRoomName]     = useState<string>("")
+  const [role, setRole]                 = useState<string | null>(null)
+  const [roomName, setRoomName]         = useState<string>("")
   const [renamingRoom, setRenamingRoom] = useState(false)
-  const [files, setFiles]           = useState<File[]>([])
-  const [members, setMembers]       = useState<Member[]>([])
-  const [activeFile, setActiveFile] = useState<File | null>(null)
-  const [loading, setLoading]       = useState(true)
-  const [error, setError]           = useState("")
+  const [files, setFiles]               = useState<File[]>([])
+  const [members, setMembers]           = useState<Member[]>([])
+  const [activeFile, setActiveFile]     = useState<File | null>(null)
+  const [loading, setLoading]           = useState(true)
+  const [error, setError]               = useState("")
+  const [showHistory, setShowHistory]   = useState(false)
 
-  // saveRef is set by Editor via onSaveReady — lets RoomPage trigger a save
-  // before switching files without having to pass useYjs state up the tree
-  const saveRef      = useRef<(() => void) | null>(null)
+  const [runStateByFileId, setRunStateByFileId] = useState<Map<string, RunState>>(new Map())
+  const [outputByFileId, setOutputByFileId]     = useState<Map<string, ExecutionResult>>(new Map())
+
+  const saveRef       = useRef<(() => void) | null>(null)
   const activeFileRef = useRef<File | null>(null)
 
-  // keep ref in sync so socket callbacks always see current activeFile
-  useEffect(() => {
-    activeFileRef.current = activeFile
-  }, [activeFile])
+  useEffect(() => { activeFileRef.current = activeFile }, [activeFile])
+  useEffect(() => { setShowHistory(false) }, [activeFile?.id])
 
   useEffect(() => {
     const load = async () => {
@@ -55,12 +63,9 @@ export default function RoomPage() {
         ])
         setRole(roleData.role)
         setRoomName(roleData.name ?? "")
-
         const allFiles: File[] = filesData.files ?? []
         setFiles(allFiles)
         setMembers(membersData.members ?? [])
-
-        // only auto-select the first active, non-folder file
         const firstFile = allFiles.find(f => f.is_active && !f.is_folder)
         if (firstFile) setActiveFile(firstFile)
       } catch {
@@ -72,16 +77,28 @@ export default function RoomPage() {
     load()
   }, [roomId])
 
+  useEffect(() => {
+    if (!activeFile || !roomId) return
+    if (outputByFileId.has(activeFile.id)) return
+    apiFetch(`/api/rooms/${roomId}/files/${activeFile.id}/execution`)
+      .then(res => {
+        if (res && res.output !== undefined) {
+          setOutputByFileId(prev => new Map(prev).set(activeFile.id, res))
+        }
+      })
+      .catch(() => {})
+  }, [activeFile?.id, roomId])
+
   const currentUserId = authLoading ? "" : (user?.id ?? "")
   const currentName   = user?.name ?? user?.email ?? ""
   const currentColor  = currentUserId ? getUserColor(currentUserId) : "#fff"
 
-  const { onlineUsers } = useRoomSocket({
+  const { onlineUsers, sendMessage } = useRoomSocket({
     roomId:         roomId!,
     currentUserId,
     currentName,
     onRoleChanged:  (newRole) => setRole(newRole),
-    onRoomRenamed:   (name) => setRoomName(name),
+    onRoomRenamed:  (name) => setRoomName(name),
     onMemberRemoved: (userId) => {
       setMembers(prev => prev.filter(m => m.user_id !== userId))
     },
@@ -93,10 +110,28 @@ export default function RoomPage() {
         setActiveFile(null)
       }
     },
+    onExecuting: (fileId) => {
+      setRunStateByFileId(prev => new Map(prev).set(fileId, "executing"))
+    },
+    onExecutionDone: (fileId, result) => {
+      setRunStateByFileId(prev =>
+        new Map(prev).set(fileId, result.exit_code === 0 ? "done-ok" : "done-err")
+      )
+      if (result.truncated) {
+        apiFetch(`/api/rooms/${roomId}/files/${fileId}/execution`)
+          .then(res => {
+            if (res) setOutputByFileId(prev => new Map(prev).set(fileId, res))
+          })
+          .catch(() => {})
+      } else {
+        setOutputByFileId(prev => new Map(prev).set(fileId, result))
+      }
+    },
+    onExecutionError: (fileId, _reason) => {
+      setRunStateByFileId(prev => new Map(prev).set(fileId, "idle"))
+    },
   })
 
-  // handleFileClick is called by FileTree when a file node is clicked.
-  // Folders are ignored. For files: force-save current file then switch.
   const handleFileClick = useCallback((file: File) => {
     if (file.is_folder) return
     if (!file.is_active) return
@@ -105,16 +140,26 @@ export default function RoomPage() {
     setActiveFile(file)
   }, [activeFile])
 
-  // handleFilesChange is called by FileTree after create/toggle/rename
-  // to keep the files list in sync without a full refetch.
   const handleFilesChange = useCallback((updated: File[]) => {
     setFiles(updated)
-    // if activeFile was toggled inactive, clear it
     if (activeFile && updated.find(f => f.id === activeFile.id)?.is_active === false) {
       saveRef.current?.()
       setActiveFile(null)
     }
   }, [activeFile])
+
+  const handleRun = () => {
+    saveRef.current?.()
+    if (!activeFile) return
+    sendMessage({
+      type:         "run_file",
+      file_id:      activeFile.id,
+      execution_id: crypto.randomUUID(),
+    })
+  }
+
+  const runState     = activeFile ? (runStateByFileId.get(activeFile.id) ?? "idle") : "idle"
+  const activeOutput = activeFile ? (outputByFileId.get(activeFile.id) ?? null) : null
 
   if (loading) {
     return (
@@ -139,6 +184,7 @@ export default function RoomPage() {
         <button className="room-back" onClick={() => navigate("/dashboard")}>
           ← Dashboard
         </button>
+
         <div className="room-info">
           {renamingRoom && role === "owner" ? (
             <input
@@ -172,6 +218,20 @@ export default function RoomPage() {
           )}
           <span className="room-active-file">{activeFile?.name ?? ""}</span>
           <span className="room-role" data-role={role}>{role}</span>
+
+          {activeFile && !activeFile.is_folder && (role === "owner" || role === "editor") && (
+            <button
+              className={`run-btn run-btn--${runState}`}
+              disabled={runState === "executing"}
+              onClick={handleRun}
+            >
+              {runState === "idle"      && "▶ Run"}
+              {runState === "executing" && "⟳"}
+              {runState === "done-ok"   && `✓ ${activeOutput?.exit_code ?? 0}`}
+              {runState === "done-err"  && `✗ ${activeOutput?.exit_code ?? 1}`}
+            </button>
+          )}
+
           {role !== "owner" && (
             <button
               className="room-leave"
@@ -185,42 +245,89 @@ export default function RoomPage() {
             </button>
           )}
         </div>
-        <span className="room-user">{user?.email}</span>
+
+        <div className="room-header-right">
+          {activeFile && !activeFile.is_folder && (
+            <button
+              className={`vh-trigger-btn ${showHistory ? "vh-trigger-btn--active" : ""}`}
+              onClick={() => setShowHistory(v => !v)}
+              title="Version History"
+            >
+              History
+            </button>
+          )}
+          <span className="room-user">{user?.email}</span>
+        </div>
       </header>
 
-      <div className="room-body">
-        <Sidebar
-          roomId={roomId!}
-          files={files}
-          activeFile={activeFile}
-          members={members}
-          currentRole={role}
-          onlineUsers={onlineUsers}
-          onFileClick={handleFileClick}
-          onMembersChange={setMembers}
-          onFilesChange={handleFilesChange}
-        />
+      <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+        <Group orientation="horizontal" style={{ flex: 1 }}>
 
-        <div className="room-editor">
-          {role === "viewer" && (
-            <div className="room-viewer-banner">
-              Read only — you can view but not edit
-            </div>
-          )}
-          {activeFile && roomId && (
-            <Editor
-              roomId={roomId}
-              fileId={activeFile.id}
-              role={role as "owner" | "editor" | "viewer"}
-              language={activeFile.language}
-              currentUserId={currentUserId}
-              currentName={currentName}
-              currentColor={currentColor}
-              onSaveReady={(saveFn) => { saveRef.current = saveFn }}
+          <Panel defaultSize="15%" minSize="10%" maxSize="30%">
+            <Sidebar
+              roomId={roomId!}
+              files={files}
+              activeFile={activeFile}
+              members={members}
+              currentRole={role}
+              onlineUsers={onlineUsers}
+              onFileClick={handleFileClick}
+              onMembersChange={setMembers}
+              onFilesChange={handleFilesChange}
             />
-          )}
-        </div>
+          </Panel>
+
+          <Separator className="resize-handle resize-handle--horizontal" />
+
+          <Panel minSize="40%">
+            <Group orientation="vertical">
+
+              <Panel minSize="20%">
+                <div className="room-editor">
+                  {role === "viewer" && (
+                    <div className="room-viewer-banner">
+                      Read only — you can view but not edit
+                    </div>
+                  )}
+                  {activeFile && roomId && (
+                    <Editor
+                      roomId={roomId}
+                      fileId={activeFile.id}
+                      role={role as "owner" | "editor" | "viewer"}
+                      language={activeFile.language}
+                      currentUserId={currentUserId}
+                      currentName={currentName}
+                      currentColor={currentColor}
+                      onSaveReady={(saveFn) => { saveRef.current = saveFn }}
+                    />
+                  )}
+                </div>
+              </Panel>
+
+              {activeFile && !activeFile.is_folder && (
+                <>
+                  <Separator className="resize-handle resize-handle--vertical" />
+                  <Panel defaultSize="25%" minSize="10%" maxSize="60%" collapsible>
+                    <OutputPanel result={activeOutput} />
+                  </Panel>
+                </>
+              )}
+
+            </Group>
+          </Panel>
+
+        </Group>
       </div>
+
+      {showHistory && activeFile && roomId && role && (
+        <VersionHistory
+          roomId={roomId}
+          fileId={activeFile.id}
+          role={role}
+          apiBase={API_BASE}
+          onClose={() => setShowHistory(false)}
+        />
+      )}
     </div>
   )
 }

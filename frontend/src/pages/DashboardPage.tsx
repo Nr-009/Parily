@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { useNavigate } from "react-router-dom"
 import { useAuth, apiFetch } from "../context/AuthContext"
+import { useNotificationSocket } from "../hooks/useNotificationSocket"
 import "./dashboard.css"
 
 interface Room {
@@ -11,6 +12,11 @@ interface Room {
   created_at: string
 }
 
+interface Toast {
+  id:      number
+  message: string
+}
+
 function ShareModal({ room, onClose }: { room: Room; onClose: () => void }) {
   const [email, setEmail]     = useState("")
   const [role, setRole]       = useState<"editor" | "viewer">("editor")
@@ -18,8 +24,8 @@ function ShareModal({ room, onClose }: { room: Room; onClose: () => void }) {
   const [success, setSuccess] = useState("")
   const [loading, setLoading] = useState(false)
 
-const handleInvite = async (e: React.FormEvent<HTMLFormElement>) => {
-  e.preventDefault()
+  const handleInvite = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
     setError(""); setSuccess(""); setLoading(true)
     try {
       await apiFetch(`/api/rooms/${room.id}/members`, {
@@ -70,6 +76,8 @@ const handleInvite = async (e: React.FormEvent<HTMLFormElement>) => {
   )
 }
 
+let toastId = 0
+
 export default function DashboardPage() {
   const { user, logout } = useAuth()
   const navigate         = useNavigate()
@@ -80,6 +88,15 @@ export default function DashboardPage() {
   const [newName, setNewName]       = useState("")
   const [showCreate, setShowCreate] = useState(false)
   const [shareRoom, setShareRoom]   = useState<Room | null>(null)
+  const [toasts, setToasts]         = useState<Toast[]>([])
+
+  const addToast = useCallback((message: string) => {
+    const id = ++toastId
+    setToasts(prev => [...prev, { id, message }])
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id))
+    }, 4000)
+  }, [])
 
   useEffect(() => {
     const load = async () => {
@@ -94,6 +111,33 @@ export default function DashboardPage() {
     }
     load()
   }, [])
+
+  // ── notification socket ────────────────────────────────────────────────────
+  useNotificationSocket({
+    enabled: true,
+    onRoomInvited: (roomId, roomName, role) => {
+      setRooms(prev => {
+        const exists = prev.some(r => r.id === roomId)
+        if (exists) return prev
+        return [{
+          id:         roomId,
+          name:       roomName,
+          owner_id:   "",
+          role:       role as "editor" | "viewer",
+          created_at: new Date().toISOString(),
+        }, ...prev]
+      })
+      addToast(`You were invited to "${roomName}"`)
+    },
+    onRoomRenamed: (roomId, name) => {
+      setRooms(prev => prev.map(r => r.id === roomId ? { ...r, name } : r))
+      addToast(`Room renamed to "${name}"`)
+    },
+    onRoomDeleted: (roomId, roomName) => {
+      setRooms(prev => prev.filter(r => r.id !== roomId))
+      addToast(`"${roomName}" was deleted`)
+    },
+  })
 
   const handleCreate = async () => {
     if (!newName.trim()) return
@@ -238,6 +282,17 @@ export default function DashboardPage() {
 
       {shareRoom && (
         <ShareModal room={shareRoom} onClose={() => setShareRoom(null)} />
+      )}
+
+      {/* ── toast notifications ── */}
+      {toasts.length > 0 && (
+        <div className="dash-toasts">
+          {toasts.map(toast => (
+            <div key={toast.id} className="dash-toast">
+              {toast.message}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )

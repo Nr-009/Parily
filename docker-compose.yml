@@ -45,6 +45,45 @@ services:
       timeout: 5s
       retries: 5
 
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: parily_kafka
+    restart: unless-stopped
+    ports:
+      - "${KAFKA_PORT}:9092"
+    environment:
+      # KRaft mode — no ZooKeeper needed
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_RETENTION_HOURS: 720        # 30 days
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: false # we create topics explicitly
+      CLUSTER_ID: "kOLkJIMhRqaooqzYDK7-yw"  # required for KRaft — fixed string
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s  # kafka takes longer to boot than other services
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: parily_kafka_init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    # runs once, creates topics, then exits
+    entrypoint: ["/bin/sh", "-c", "echo 'Creating Kafka topics...' && kafka-topics --create --bootstrap-server kafka:9092 --topic edit-events --partitions 1 --replication-factor 1 --config retention.ms=2592000000 && kafka-topics --create --bootstrap-server kafka:9092 --topic execution-events --partitions 1 --replication-factor 1 --config retention.ms=2592000000 && kafka-topics --create --bootstrap-server kafka:9092 --topic dead-letter --partitions 1 --replication-factor 1 --config retention.ms=7776000000 && echo 'Topics created.' && kafka-topics --list --bootstrap-server kafka:9092"]
+
   backend:
     build:
       context: ./backend
@@ -62,6 +101,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
 
   frontend:
     build:
@@ -77,7 +118,90 @@ services:
     depends_on:
       - backend
 
+  executor:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.executor
+    container_name: parily_executor
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: parily_prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT}:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.path=/prometheus'
+    depends_on:
+      - backend
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: parily_grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+  jaeger-init:
+    image: alpine:3.19
+    user: root
+    container_name: parily_jaeger_init
+    command: ["sh", "-c", "mkdir -p /badger/data /badger/key && chown -R 10001:10001 /badger"]
+    volumes:
+      - jaeger_data:/badger
+    restart: "no"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.56
+    container_name: parily_jaeger
+    restart: unless-stopped
+    depends_on:
+      jaeger-init:
+        condition: service_completed_successfully
+    ports:
+      - "${JAEGER_UI_PORT}:16686"
+      - "${JAEGER_OTLP_GRPC_PORT}:4317"
+      - "${JAEGER_OTLP_HTTP_PORT}:4318"
+    environment:
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_VALUE=/badger/data
+      - BADGER_DIRECTORY_KEY=/badger/key
+      - COLLECTOR_OTLP_ENABLED=true
+    volumes:
+      - jaeger_data:/badger
 volumes:
   postgres_data:
   mongo_data:
   redis_data:
+  kafka_data:
+  prometheus_data:
+  grafana_data:
+  jaeger_data:

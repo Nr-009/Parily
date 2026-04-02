@@ -1,0 +1,28 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: websocket-server
+  namespace: pairly
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: websocket-server
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    # Scale up when average CPU across all pods exceeds 70%.
+    # WebSocket connections are CPU-light but memory-heavy —
+    # CPU at 70% means the pod is genuinely under load.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

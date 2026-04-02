@@ -16,7 +16,14 @@ interface UseYjsOptions {
   currentColor:  string
 }
 
-export function useYjs({ roomId, fileId, monacoEditor, currentUserId, currentName, currentColor }: UseYjsOptions) {
+export function useYjs({
+  roomId,
+  fileId,
+  monacoEditor,
+  currentUserId,
+  currentName,
+  currentColor,
+}: UseYjsOptions) {
   const ydocRef         = useRef<Y.Doc | null>(null)
   const providerRef     = useRef<WebsocketProvider | null>(null)
   const opCountRef      = useRef(0)
@@ -55,10 +62,8 @@ export function useYjs({ roomId, fileId, monacoEditor, currentUserId, currentNam
         ydoc,
         { connect: true }
       )
-
       providerRef.current = provider
 
-      // Set local awareness state so other users know who we are
       provider.awareness.setLocalStateField("user", {
         userId: currentUserId,
         name:   currentName,
@@ -96,7 +101,6 @@ export function useYjs({ roomId, fileId, monacoEditor, currentUserId, currentNam
         opCountRef.current++
         if (opCountRef.current >= SAVE_OP_COUNT) sendSnapshot()
       }
-
       ytext.observe(handleObserve)
 
       const interval = setInterval(() => {
@@ -121,6 +125,7 @@ export function useYjs({ roomId, fileId, monacoEditor, currentUserId, currentNam
     let cleanup: (() => void) | undefined
     init().then((fn) => { cleanup = fn })
     return () => { cleanup?.() }
+
   }, [roomId, fileId, monacoEditor])
 
   const save = useCallback(() => {

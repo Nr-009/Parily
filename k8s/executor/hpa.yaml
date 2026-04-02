@@ -1,0 +1,21 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: executor
+  namespace: pairly
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: executor
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    # Executor is CPU-heavy — each container run pegs CPU for its duration.
+    # Scale up at 60% so new pods are ready before existing ones are saturated.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60

@@ -1,8 +1,20 @@
 #!/bin/bash
 set -e
 
-echo "Starting Pairly on Kubernetes..."
+echo "Building and pushing Docker images..."
 
+docker build -t nrubiano01/pairly-server:latest -f backend/Dockerfile ./backend
+docker push nrubiano01/pairly-server:latest
+
+docker build -t nrubiano01/pairly-executor:latest -f backend/Dockerfile.executor ./backend
+docker push nrubiano01/pairly-executor:latest
+
+docker build -t nrubiano01/pairly-frontend:latest -f frontend/Dockerfile ./frontend
+docker push nrubiano01/pairly-frontend:latest
+
+echo "Images pushed successfully!"
+
+echo "Starting Pairly on Kubernetes..."
 echo "Creating namespace..."
 kubectl apply -f k8s/namespace.yaml
 
@@ -32,9 +44,15 @@ kubectl apply -f k8s/prometheus/
 kubectl apply -f k8s/grafana/
 kubectl apply -f k8s/jaeger/
 
-echo "Waiting for application to be ready..."
-kubectl wait --for=condition=ready pod -l app=websocket-server -n pairly --timeout=120s
-kubectl wait --for=condition=ready pod -l app=frontend -n pairly --timeout=120s
+echo "Restarting deployments to pick up new images..."
+kubectl rollout restart deployment/websocket-server -n pairly
+kubectl rollout restart deployment/executor -n pairly
+kubectl rollout restart deployment/frontend -n pairly
+
+echo "Waiting for rollouts to complete..."
+kubectl rollout status deployment/websocket-server -n pairly --timeout=120s
+kubectl rollout status deployment/executor -n pairly --timeout=120s
+kubectl rollout status deployment/frontend -n pairly --timeout=120s
 
 echo ""
 echo "Pairly is running!"

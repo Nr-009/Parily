@@ -23,3 +23,6 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+secrets.yaml
+k8s/secrets.yaml

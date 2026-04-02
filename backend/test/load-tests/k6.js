@@ -8,9 +8,9 @@ import encoding from "k6/encoding";
 const BASE_URL = "http://localhost:8080";
 const WS_URL = "ws://localhost:8080";
 const TOKEN =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiODM0ZDQ2YmUtZTExNS00MzUyLThjM2EtNWFhM2NkNDVlZTg4IiwiZW1haWwiOiJhQGV4YW1wbGUuY29tIiwiZXhwIjoxNzc1MDI5NjQzLCJpYXQiOjE3NzQ5NDMyNDN9.5Zo2thoCWz8FNQnskTpR8tjJ5Co0upjEmGbD3MKmxWc";
-const ROOM_ID = "6aa80a9a-3b37-4a1a-b0ae-1fceef69119d";
-const FILE_ID = "68175edb-3251-4580-9fe0-2e3e01893c62";
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiODk3M2Q1ZmEtYzEzNC00ZDAwLWE3YmMtOWFmMjhiNjE5Njg4IiwiZW1haWwiOiJzYW15QGV4YW1wbGUuY29tIiwiZXhwIjoxNzc1MjAzMDk2LCJpYXQiOjE3NzUxMTY2OTZ9.1E5er-qxHEnv61B14rmTxNCeKPC591emJ7erpmqgEys";
+const ROOM_ID = "0d9c52f5-f4c5-444d-9fe8-b588e2f91121";
+const FILE_ID = "4b028aab-eab7-4920-97c1-a4e5891a3cf4";
 const COOKIE = `parily_token=${TOKEN}`;
 
 // ─── Custom metrics ─────────────────────────────────────────────────────────
@@ -22,61 +22,52 @@ const execAccepted = new Counter("exec_accepted");
 const execRejected = new Counter("exec_rejected_already_running");
 
 // ─── Scenarios ──────────────────────────────────────────────────────────────
-// Three independent scenarios running in parallel.
-// Each targets a different thing we want to prove.
 export const options = {
   scenarios: {
 
-    // Scenario 1 — 25 virtual users all connect to the room WebSocket
-    // simultaneously and hold the connection for 10s then disconnect cleanly.
-    // Watch active_websocket_connections in Grafana — should spike to 25
-    // and return to 0 after all users disconnect.
+    // Scenario 1 — 25 virtual users connect to the room WebSocket and hold
+    // for 60 seconds. Grafana scrapes every 15s so the plateau will be
+    // clearly visible as a flat line at 25 connections for ~4 scrape intervals.
     websocket_connections: {
       executor: "ramping-vus",
       startVUs: 0,
       stages: [
-        { duration: "5s", target: 25 },  // ramp up to 25 connections
-        { duration: "10s", target: 25 }, // hold — watch Grafana spike
-        { duration: "5s", target: 0 },   // ramp down — watch Grafana return to 0
+        { duration: "10s", target: 25 }, // ramp up
+        { duration: "60s", target: 25 }, // hold — Grafana shows clear plateau
+        { duration: "10s", target: 0 },  // ramp down
       ],
       exec: "scenarioWebSocket",
     },
 
-    // Scenario 2 — 10 virtual users all POST the exact same Yjs blob to
-    // SaveState simultaneously. Dedup should skip all duplicates after the
-    // first one lands. Watch yjs_saves_skipped_total spike in Grafana.
+    // Scenario 2 — 10 virtual users all POST the exact same Yjs blob for 60s.
+    // Dedup skips all duplicates. Watch yjs_saves_skipped_total sustain in Grafana.
     simultaneous_saves: {
       executor: "constant-vus",
       vus: 10,
-      duration: "20s",
+      duration: "60s",
       exec: "scenarioSaveState",
-      startTime: "5s", // slight delay so WS scenario starts first
+      startTime: "10s",
     },
 
-    // Scenario 3 — 15 virtual users all click Run at the same time.
-    // Redis SetNX lock means only ONE execution goes through.
-    // The rest get already_running back immediately.
-    // Watch executions_total stay at 1 per wave in Grafana.
+    // Scenario 3 — 15 virtual users all click Run for 50 seconds.
+    // Redis SetNX lock means only ONE execution goes through per wave.
+    // Watch executions_total stay low while exec_rejected climbs in Grafana.
     concurrent_executions: {
       executor: "ramping-vus",
       startVUs: 0,
       stages: [
-        { duration: "2s", target: 15 },  // ramp up fast — simulate everyone clicking Run
-        { duration: "8s", target: 15 },  // hold
-        { duration: "2s", target: 0 },
+        { duration: "5s", target: 15 },  // ramp up fast
+        { duration: "50s", target: 15 }, // hold — sustained execution spike
+        { duration: "5s", target: 0 },
       ],
       exec: "scenarioExecution",
-      startTime: "10s", // start after saves scenario is warmed up
+      startTime: "15s",
     },
   },
 
-  // Global thresholds — test fails if these are breached
   thresholds: {
-    // At least 90% of WebSocket connections must succeed
     ws_connected: [{ threshold: "count>20", abortOnFail: false }],
-    // SaveState must accept at least some saves (not all rejected)
     save_accepted: [{ threshold: "count>5", abortOnFail: false }],
-    // HTTP errors should be under 10%
     http_req_failed: [{ threshold: "rate<0.1", abortOnFail: false }],
   },
 };
@@ -89,7 +80,7 @@ export function scenarioWebSocket() {
     socket.on("open", () => {
       wsConnected.add(1);
 
-      // send heartbeat every 10s as the real client does
+      // heartbeat every 10s — same as real frontend
       socket.setInterval(() => {
         socket.send(JSON.stringify({ type: "heartbeat" }));
       }, 10000);
@@ -99,19 +90,19 @@ export function scenarioWebSocket() {
       wsFailed.add(1);
     });
 
-    // hold connection for the duration of the stage
+    // hold for 65s so the plateau is fully captured by Grafana
     socket.setTimeout(() => {
       socket.close();
-    }, 12000);
+    }, 65000);
   });
 
   check(res, { "ws connected": (r) => r && r.status === 101 });
 }
 
 // ─── Scenario 2 — Simultaneous SaveState (dedup under load) ─────────────────
-// A minimal valid Yjs document encoded as base64.
-// All 10 VUs send the exact same blob — dedup should skip all but the first.
-const YJS_BLOB = generateMinimalYjsBlob();
+// Real Yjs blob for main.py fetched via LoadState endpoint.
+// All 10 VUs send this exact blob — dedup skips all but the first.
+const YJS_BLOB = generateYjsBlob();
 
 export function scenarioSaveState() {
   const url = `${BASE_URL}/api/rooms/${ROOM_ID}/files/${FILE_ID}/state`;
@@ -130,19 +121,15 @@ export function scenarioSaveState() {
   }
 
   check(res, { "save returned 200": (r) => r.status === 200 });
-
-  // small sleep so we don't hammer too fast — realistic save interval
   sleep(2);
 }
 
 // ─── Scenario 3 — Concurrent executions (lock under load) ───────────────────
 export function scenarioExecution() {
-  // connect to room WebSocket and send run_file — same as real frontend does
   const url = `${WS_URL}/room-ws/${ROOM_ID}`;
 
   ws.connect(url, { headers: { Cookie: COOKIE } }, (socket) => {
     socket.on("open", () => {
-      // send run_file immediately on connect — simulates everyone clicking Run
       socket.send(
         JSON.stringify({
           type: "run_file",
@@ -161,7 +148,7 @@ export function scenarioExecution() {
           msg.type === "execution_error" &&
           msg.reason === "already_running"
         ) {
-          // this is EXPECTED — proves the lock is working
+          // expected — proves the Redis lock is working
           execRejected.add(1);
         }
       } catch (_) {}
@@ -177,20 +164,16 @@ export function scenarioExecution() {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-// Real Yjs document state fetched directly from MongoDB via LoadState endpoint.
-// This is the actual binary blob for main.py in the test room.
-// All 10 VUs send this exact same blob — dedup should skip all but the first
-// because yjsBlobToText() will decode to the same text on every request.
-// k6 sends Uint8Array directly as binary HTTP body — no .buffer wrapper needed.
-function generateMinimalYjsBlob() {
+// Real Yjs state for main.py fetched via LoadState endpoint.
+function generateYjsBlob() {
   const base64 =
-    "AgH+r6/dDQCE/c6/nQnrAfwCaW1wb3J0IHN5cwppbXBvcnQgdGltZQoKZGVmIGRpdmlkZShhLCBiKToKICAgIGlmIGIgPT0gMDoKICAgICAgICBwcmludCgiRXJyb3I6IGRpdmlzaW9uIGJ5IHplcm8iLCBmaWxlPXN5cy5zdGRlcnIpCiAgICAgICAgc3lzLmV4aXQoMSkKICAgIHJldHVybiBhIC8gYgoKcHJpbnQoIlN0YXJ0aW5nIGNhbGN1bGF0aW9ucy4uLiIpCnRpbWUuc2xlZXAoMSkKcHJpbnQoZiIxMCAvIDIgPSB7ZGl2aWRlKDEwLCAyKX0iKQpwcmludChmIjkgLyAzID0ge2RpdmlkZSg5LCAzKX0iKQpwcmludCgiQWJvdXQgdG8gY3Jhc2guLi4iKQp0aW1lLnNsZWVwKDEpCnByaW50KGYiNSAvIDAgPSB7ZGl2aWRlKDUsIDApfSIpCnByaW50KCJUaGlzIGxpbmUgc2hvdWxkIG5ldmVyIHByaW50IikB/c6/nQkAAQEHY29udGVudOwBAf3Ov50JAQDsAQ==";
+    "AhKlwamoCACBn9/73QWBAgGBpcGpqAgAAcGlwamoCAClwamoCAESwaXBqagIE6XBqagIAQHBpcGpqAgTpcGpqAgUAsGlwamoCBSlwamoCAENwaXBqagII6XBqagIAQHBpcGpqAgjpcGpqAgkCMGlwamoCCylwamoCCQBwaXBqagILKXBqagILQLBpcGpqAgvpcGpqAgtAcGlwamoCC+lwamoCDABwaXBqagILaXBqagIJAXBpcGpqAg2pcGpqAgkAcGlwamoCDalwamoCDcGwaXBqagIPaXBqagINwHBpcGpqAg9pcGpqAg+AcGlwamoCDelwamoCCQBMp/f+90FAAEBB2NvbnRlbnQLgZ/f+90FCgHBn9/73QUKn9/73QULDIGf3/vdBQsxgZ/f+90FSAHBn9/73QVIn9/73QVJAYGf3/vdBUk0gZ/f+90FfgHBn9/73QV+n9/73QV/AYGf3/vdBX8HgZ/f+90FhwEBwZ/f+90FhwGf3/vdBYgBA4Gf3/vdBYgBCIGf3/vdBZMBAcGf3/vdBZMBn9/73QWUAQOBn9/73QWUARKBn9/73QWpAQHBn9/73QWpAZ/f+90FqgEBgZ/f+90FqgEPgZ/f+90FugECgZ/f+90FvAEBwZ/f+90FvAGf3/vdBb0BAcGf3/vdBboBn9/73QW7AQGBn9/73QW9AQ2Bn9/73QXMAQHBn9/73QXMAZ/f+90FzQEBgZ/f+90FzQEIgZ/f+90F1gEBwZ/f+90F1gGf3/vdBdcBA4Gf3/vdBdcBCIGf3/vdBeIBAcGf3/vdBeIBn9/73QXjAQOBn9/73QXjARSBn9/73QX6AQHBn9/73QX6AZ/f+90F+wEBgZ/f+90F+wEFwZ/f+90FgQKlwamoCAALwZ/f+90FjAKlwamoCAABwZ/f+90FjAKf3/vdBY0CAcGf3/vdBY0CpcGpqAgACMGf3/vdBZYCpcGpqAgAAcGf3/vdBZYCn9/73QWXAgPBn9/73QWXAqXBqagIAAjBn9/73QWiAqXBqagIAAHBn9/73QWiAp/f+90FowIDwZ/f+90FowKlwamoCAARwZ/f+90FtwKlwamoCAABwZ/f+90FtwKf3/vdBbgCAcGf3/vdBbgCpcGpqAgABYSlwamoCAHADGltcG9ydCB0aW1lCmltcG9ydCByYW5kb20KCmRlZiBidWJibGVfc29ydChhcnIpOgogICAgbiA9IGxlbihhcnIpCiAgICBmb3IgaSBpbiByYW5nZShuKToKICAgICAgICBmb3IgaiBpbiByYW5nZSgwLCBuLWktMSk6CiAgICAgICAgICAgIGlmIGFycltqXSA+IGFycltqKzFdOgogICAgICAgICAgICAgICAgYXJyW2pdLCBhcnJbaisxXSA9IGFycltqKzFdLCBhcnJbal0KICAgIHJldHVybiBhcnIKCmRlZiBtZXJnZV9zb3J0KGFycik6CiAgICBpZiBsZW4oYXJyKSA8PSAxOgogICAgICAgIHJldHVybiBhcnIKICAgIG1pZCA9IGxlbihhcnIpIC8vIDIKICAgIGxlZnQgPSBtZXJnZV9zb3J0KGFycls6bWlkXSkKICAgIHJpZ2h0ID0gbWVyZ2Vfc29ydChhcnJbbWlkOl0pCiAgICByZXR1cm4gbWVyZ2UobGVmdCwgcmlnaHQpCgpkZWYgbWVyZ2UobGVmdCwgcmlnaHQpOgogICAgcmVzdWx0ID0gW10KICAgIGkgPSBqID0gMAogICAgd2hpbGUgaSA8IGxlbihsZWZ0KSBhbmQgaiA8IGxlbihyaWdodCk6CiAgICAgICAgaWYgbGVmdFtpXSA8PSByaWdodFtqXToKICAgICAgICAgICAgcmVzdWx0LmFwcGVuZChsZWZ0W2ldKQogICAgICAgICAgICBpICs9IDEKICAgICAgICBlbHNlOgogICAgICAgICAgICByZXN1bHQuYXBwZW5kKHJpZ2h0W2pdKQogICAgICAgICAgICBqICs9IDEKICAgIHJlc3VsdC5leHRlbmQobGVmdFtpOl0pCiAgICByZXN1bHQuZXh0ZW5kKHJpZ2h0W2o6XSkKICAgIHJldHVybiByZXN1bHQKCmRlZiBiaW5hcnlfc2VhcmNoKGFyciwgdGFyZ2V0KToKICAgIGxlZnQsIHJpZ2h0ID0gMCwgbGVuKGFycikgLSAxCiAgICB3aGlsZSBsZWZ0IDw9IHJpZ2h0OgogICAgICAgIG1pZCA9IChsZWZ0ICsgcmlnaHQpIC8vIDIKICAgICAgICBpZiBhcnJbbWlkXSA9PSB0YXJnZXQ6CiAgICAgICAgICAgIHJldHVybiBtaWQKICAgICAgICBlbGlmIGFyclttaWRdIDwgdGFyZ2V0OgogICAgICAgICAgICBsZWZ0ID0gbWlkICsgMQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIHJpZ2h0ID0gbWlkIC0gMQogICAgcmV0dXJuIC0xCgojIEdlbmVyYXRlIGRhdGEKZGF0YSA9IFtyYW5kb20ucmFuZGludCgxLCAxMDAwKSBmb3IgXyBpbiByYW5nZSgyMCldCnByaW50KGYiT3JpZ2luYWw6ICAgIHtkYXRhfSIpCgojIEJ1YmJsZSBzb3J0CmJ1YmJsZSA9IGRhdGEuY29weSgpCmJ1YmJsZV9zb3J0KGJ1YmJsZSkKcHJpbnQoZiJCdWJibGUgc29ydDoge2J1YmJsZX0iKQoKIyBNZXJnZSBzb3J0Cm1lcmdlZCA9IG1lcmdlX3NvcnQoZGF0YS5jb3B5KCkpCnByaW50KGYiTWVyZ2Ugc29ydDogIHttZXJnZWR9IikKCiMgQmluYXJ5IHNlYXJjaAp0YXJnZXQgPSBtZXJnZWRbcmFuZG9tLnJhbmRpbnQoMCwgbGVuKG1lcmdlZCktMSldCmlkeCA9IGJpbmFyeV9zZWFyY2gobWVyZ2VkLCB0YXJnZXQpCnByaW50KGYiXG5TZWFyY2hpbmcgZm9yIHt0YXJnZXR9IOKGkiBmb3VuZCBhdCBpbmRleCB7aWR4fSIpCgojIFN0YXRzCnByaW50KGYiXG5NaW46IHttZXJnZWRbMF19IikKcHJpbnQoZiJNYXg6IHttZXJnZWRbLTFdfSIpCnByaW50KGYiU3VtOiB7c3VtKG1lcmdlZCl9IikKcHJpbnQoZiJBdmc6IHtzdW0obWVyZ2VkKS9sZW4obWVyZ2VkKTouMmZ9IikCpcGpqAgBAEGf3/vdBQEAvwI=";
   return encoding.b64decode(base64, "std", "u");
 }
 
-// Generates a UUID v4 — used for execution_id in scenario 3
+// Generates a UUID v4 — used for execution_id in scenario 3.
 // Each VU sends a unique execution_id so the idempotency cache
-// doesn't block them — only the Redis lock should block them
+// doesn't block them — only the Redis lock should block them.
 function generateUUID() {
   return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;

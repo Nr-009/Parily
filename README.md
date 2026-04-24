@@ -11,7 +11,7 @@
 ![Docker](https://img.shields.io/badge/Docker-Hub-2496ED?logo=docker&logoColor=white)
 ![Kafka](https://img.shields.io/badge/Kafka-KRaft-231F20?logo=apachekafka&logoColor=white)
 
-<video src="https://github.com/user-attachments/assets/8c37ea53-461c-49fa-852f-9b2cbb0d50a5" autoplay loop muted playsinline width="100%"></video>
+![Demo](docs/preview.gif)
 
 [Getting Started](#getting-started) · [Architecture](#architecture) · [How It Works](#how-it-works) · [Observability](#observability) · [Load Testing](#load-testing) · [Deployment](#aws-deployment)
 
